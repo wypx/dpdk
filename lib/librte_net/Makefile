@@ -14,12 +14,14 @@ LIBABIVER := 1
 
 SRCS-$(CONFIG_RTE_LIBRTE_NET) := rte_net.c
 SRCS-$(CONFIG_RTE_LIBRTE_NET) += rte_net_crc.c
+SRCS-$(CONFIG_RTE_LIBRTE_NET) += rte_ether.c
 SRCS-$(CONFIG_RTE_LIBRTE_NET) += rte_arp.c
 
 # install includes
 SYMLINK-$(CONFIG_RTE_LIBRTE_NET)-include := rte_ip.h rte_tcp.h rte_udp.h rte_esp.h
 SYMLINK-$(CONFIG_RTE_LIBRTE_NET)-include += rte_sctp.h rte_icmp.h rte_arp.h
 SYMLINK-$(CONFIG_RTE_LIBRTE_NET)-include += rte_ether.h rte_gre.h rte_net.h
-SYMLINK-$(CONFIG_RTE_LIBRTE_NET)-include += rte_net_crc.h rte_mpls.h
+SYMLINK-$(CONFIG_RTE_LIBRTE_NET)-include += rte_net_crc.h rte_mpls.h rte_higig.h
+SYMLINK-$(CONFIG_RTE_LIBRTE_NET)-include += rte_gtp.h rte_vxlan.h
 
 include $(RTE_SDK)/mk/rte.lib.mk

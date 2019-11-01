@@ -30,6 +30,7 @@
 #include <rte_errno.h>
 #include <rte_string_fns.h>
 #include <rte_spinlock.h>
+#include <rte_tailq.h>
 
 #include "rte_mempool.h"
 
@@ -428,23 +429,17 @@ rte_mempool_populate_default(struct rte_mempool *mp)
 	rte_iova_t iova;
 	unsigned mz_id, n;
 	int ret;
-	bool no_contig, try_contig, no_pageshift, external;
+	bool need_iova_contig_obj;
+	bool try_iova_contig_mempool;
+	bool alloc_in_ext_mem;
 
 	ret = mempool_ops_alloc_once(mp);
 	if (ret != 0)
 		return ret;
 
-	/* check if we can retrieve a valid socket ID */
-	ret = rte_malloc_heap_socket_is_external(mp->socket_id);
-	if (ret < 0)
-		return -EINVAL;
-	external = ret;
-
 	/* mempool must not be populated */
 	if (mp->nb_mem_chunks != 0)
 		return -EEXIST;
-
-	no_contig = mp->flags & MEMPOOL_F_NO_IOVA_CONTIG;
 
 	/*
 	 * the following section calculates page shift and page size values.
@@ -495,16 +490,23 @@ rte_mempool_populate_default(struct rte_mempool *mp)
 	 * to go for contiguous memory even if we're in no-huge mode, because
 	 * external memory may in fact be IOVA-contiguous.
 	 */
-	external = rte_malloc_heap_socket_is_external(mp->socket_id) == 1;
-	no_pageshift = no_contig ||
-			(!external && rte_eal_iova_mode() == RTE_IOVA_VA);
-	try_contig = !no_contig && !no_pageshift &&
-			(rte_eal_has_hugepages() || external);
 
-	if (no_pageshift) {
+	/* check if we can retrieve a valid socket ID */
+	ret = rte_malloc_heap_socket_is_external(mp->socket_id);
+	if (ret < 0)
+		return -EINVAL;
+	alloc_in_ext_mem = (ret == 1);
+	need_iova_contig_obj = !(mp->flags & MEMPOOL_F_NO_IOVA_CONTIG);
+	try_iova_contig_mempool = false;
+
+	if (!need_iova_contig_obj) {
 		pg_sz = 0;
 		pg_shift = 0;
-	} else if (try_contig) {
+	} else if (!alloc_in_ext_mem && rte_eal_iova_mode() == RTE_IOVA_VA) {
+		pg_sz = 0;
+		pg_shift = 0;
+	} else if (rte_eal_has_hugepages() || alloc_in_ext_mem) {
+		try_iova_contig_mempool = true;
 		pg_sz = get_min_page_size(mp->socket_id);
 		pg_shift = rte_bsf32(pg_sz);
 	} else {
@@ -516,7 +518,7 @@ rte_mempool_populate_default(struct rte_mempool *mp)
 		size_t min_chunk_size;
 		unsigned int flags;
 
-		if (try_contig || no_pageshift)
+		if (try_iova_contig_mempool || pg_sz == 0)
 			mem_size = rte_mempool_ops_calc_mem_size(mp, n,
 					0, &min_chunk_size, &align);
 		else
@@ -540,7 +542,7 @@ rte_mempool_populate_default(struct rte_mempool *mp)
 		/* if we're trying to reserve contiguous memory, add appropriate
 		 * memzone flag.
 		 */
-		if (try_contig)
+		if (try_iova_contig_mempool)
 			flags |= RTE_MEMZONE_IOVA_CONTIG;
 
 		mz = rte_memzone_reserve_aligned(mz_name, mem_size,
@@ -550,8 +552,9 @@ rte_mempool_populate_default(struct rte_mempool *mp)
 		 * minimum required contiguous chunk fits minimum page, adjust
 		 * memzone size to the page size, and try again.
 		 */
-		if (mz == NULL && try_contig && min_chunk_size <= pg_sz) {
-			try_contig = false;
+		if (mz == NULL && try_iova_contig_mempool &&
+				min_chunk_size <= pg_sz) {
+			try_iova_contig_mempool = false;
 			flags &= ~RTE_MEMZONE_IOVA_CONTIG;
 
 			mem_size = rte_mempool_ops_calc_mem_size(mp, n,
@@ -586,12 +589,12 @@ rte_mempool_populate_default(struct rte_mempool *mp)
 			goto fail;
 		}
 
-		if (no_contig)
-			iova = RTE_BAD_IOVA;
-		else
+		if (need_iova_contig_obj)
 			iova = mz->iova;
+		else
+			iova = RTE_BAD_IOVA;
 
-		if (no_pageshift || try_contig)
+		if (try_iova_contig_mempool || pg_sz == 0)
 			ret = rte_mempool_populate_iova(mp, mz->addr,
 				iova, mz->len,
 				rte_mempool_memchunk_mz_free,
@@ -711,7 +714,7 @@ rte_mempool_free(struct rte_mempool *mp)
 		return;
 
 	mempool_list = RTE_TAILQ_CAST(rte_mempool_tailq.head, rte_mempool_list);
-	rte_rwlock_write_lock(RTE_EAL_TAILQ_RWLOCK);
+	rte_mcfg_tailq_write_lock();
 	/* find out tailq entry */
 	TAILQ_FOREACH(te, mempool_list, next) {
 		if (te->data == (void *)mp)
@@ -722,7 +725,7 @@ rte_mempool_free(struct rte_mempool *mp)
 		TAILQ_REMOVE(mempool_list, te, next);
 		rte_free(te);
 	}
-	rte_rwlock_write_unlock(RTE_EAL_TAILQ_RWLOCK);
+	rte_mcfg_tailq_write_unlock();
 
 	rte_mempool_free_memchunks(mp);
 	rte_mempool_ops_free(mp);
@@ -830,7 +833,7 @@ rte_mempool_create_empty(const char *name, unsigned n, unsigned elt_size,
 		return NULL;
 	}
 
-	rte_rwlock_write_lock(RTE_EAL_MEMPOOL_RWLOCK);
+	rte_mcfg_mempool_write_lock();
 
 	/*
 	 * reserve a memory zone for this mempool: private data is
@@ -898,15 +901,15 @@ rte_mempool_create_empty(const char *name, unsigned n, unsigned elt_size,
 
 	te->data = mp;
 
-	rte_rwlock_write_lock(RTE_EAL_TAILQ_RWLOCK);
+	rte_mcfg_tailq_write_lock();
 	TAILQ_INSERT_TAIL(mempool_list, te, next);
-	rte_rwlock_write_unlock(RTE_EAL_TAILQ_RWLOCK);
-	rte_rwlock_write_unlock(RTE_EAL_MEMPOOL_RWLOCK);
+	rte_mcfg_tailq_write_unlock();
+	rte_mcfg_mempool_write_unlock();
 
 	return mp;
 
 exit_unlock:
-	rte_rwlock_write_unlock(RTE_EAL_MEMPOOL_RWLOCK);
+	rte_mcfg_mempool_write_unlock();
 	rte_free(te);
 	rte_mempool_free(mp);
 	return NULL;
@@ -1268,14 +1271,14 @@ rte_mempool_list_dump(FILE *f)
 
 	mempool_list = RTE_TAILQ_CAST(rte_mempool_tailq.head, rte_mempool_list);
 
-	rte_rwlock_read_lock(RTE_EAL_MEMPOOL_RWLOCK);
+	rte_mcfg_mempool_read_lock();
 
 	TAILQ_FOREACH(te, mempool_list, next) {
 		mp = (struct rte_mempool *) te->data;
 		rte_mempool_dump(f, mp);
 	}
 
-	rte_rwlock_read_unlock(RTE_EAL_MEMPOOL_RWLOCK);
+	rte_mcfg_mempool_read_unlock();
 }
 
 /* search a mempool from its name */
@@ -1288,7 +1291,7 @@ rte_mempool_lookup(const char *name)
 
 	mempool_list = RTE_TAILQ_CAST(rte_mempool_tailq.head, rte_mempool_list);
 
-	rte_rwlock_read_lock(RTE_EAL_MEMPOOL_RWLOCK);
+	rte_mcfg_mempool_read_lock();
 
 	TAILQ_FOREACH(te, mempool_list, next) {
 		mp = (struct rte_mempool *) te->data;
@@ -1296,7 +1299,7 @@ rte_mempool_lookup(const char *name)
 			break;
 	}
 
-	rte_rwlock_read_unlock(RTE_EAL_MEMPOOL_RWLOCK);
+	rte_mcfg_mempool_read_unlock();
 
 	if (te == NULL) {
 		rte_errno = ENOENT;
@@ -1315,11 +1318,11 @@ void rte_mempool_walk(void (*func)(struct rte_mempool *, void *),
 
 	mempool_list = RTE_TAILQ_CAST(rte_mempool_tailq.head, rte_mempool_list);
 
-	rte_rwlock_read_lock(RTE_EAL_MEMPOOL_RWLOCK);
+	rte_mcfg_mempool_read_lock();
 
 	TAILQ_FOREACH_SAFE(te, mempool_list, next, tmp_te) {
 		(*func)((struct rte_mempool *) te->data, arg);
 	}
 
-	rte_rwlock_read_unlock(RTE_EAL_MEMPOOL_RWLOCK);
+	rte_mcfg_mempool_read_unlock();
 }

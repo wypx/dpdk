@@ -8,8 +8,7 @@ APP = bond_app
 SRCS-y := main.c
 
 # Build using pkg-config variables if possible
-$(shell pkg-config --exists libdpdk)
-ifeq ($(.SHELLSTATUS),0)
+ifeq ($(shell pkg-config --exists libdpdk && echo 0),0)
 
 all: shared
 .PHONY: shared static
@@ -20,10 +19,12 @@ static: build/$(APP)-static
 
 LDFLAGS += -lrte_pmd_bond
 
-PC_FILE := $(shell pkg-config --path libdpdk)
-CFLAGS += -O3 $(shell pkg-config --cflags libdpdk)
-LDFLAGS_SHARED = $(shell pkg-config --libs libdpdk)
-LDFLAGS_STATIC = -Wl,-Bstatic $(shell pkg-config --static --libs libdpdk)
+PKGCONF=pkg-config --define-prefix
+
+PC_FILE := $(shell $(PKGCONF) --path libdpdk)
+CFLAGS += -O3 $(shell $(PKGCONF) --cflags libdpdk)
+LDFLAGS_SHARED = $(shell $(PKGCONF) --libs libdpdk)
+LDFLAGS_STATIC = -Wl,-Bstatic $(shell $(PKGCONF) --static --libs libdpdk)
 
 CFLAGS += -DALLOW_EXPERIMENTAL_API
 

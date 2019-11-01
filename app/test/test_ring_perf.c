@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  * Copyright(c) 2010-2014 Intel Corporation
+ * Copyright(c) 2019 Arm Limited
  */
 
 
@@ -9,6 +10,7 @@
 #include <rte_cycles.h>
 #include <rte_launch.h>
 #include <rte_pause.h>
+#include <string.h>
 
 #include "test.h"
 
@@ -20,6 +22,7 @@
  *  * Empty ring dequeue
  *  * Enqueue/dequeue of bursts in 1 threads
  *  * Enqueue/dequeue of bursts in 2 threads
+ *  * Enqueue/dequeue of bursts in all available threads
  */
 
 #define RING_NAME "RING_PERF"
@@ -162,7 +165,11 @@ enqueue_bulk(void *p)
 	unsigned i;
 	void *burst[MAX_BURST] = {0};
 
-	if ( __sync_add_and_fetch(&lcore_count, 1) != 2 )
+#ifdef RTE_USE_C11_MEM_MODEL
+	if (__atomic_add_fetch(&lcore_count, 1, __ATOMIC_RELAXED) != 2)
+#else
+	if (__sync_add_and_fetch(&lcore_count, 1) != 2)
+#endif
 		while(lcore_count != 2)
 			rte_pause();
 
@@ -198,7 +205,11 @@ dequeue_bulk(void *p)
 	unsigned i;
 	void *burst[MAX_BURST] = {0};
 
-	if ( __sync_add_and_fetch(&lcore_count, 1) != 2 )
+#ifdef RTE_USE_C11_MEM_MODEL
+	if (__atomic_add_fetch(&lcore_count, 1, __ATOMIC_RELAXED) != 2)
+#else
+	if (__sync_add_and_fetch(&lcore_count, 1) != 2)
+#endif
 		while(lcore_count != 2)
 			rte_pause();
 
@@ -248,6 +259,76 @@ run_on_core_pair(struct lcore_pair *cores, struct rte_ring *r,
 		printf("MP/MC bulk enq/dequeue (size: %u): %.2F\n", bulk_sizes[i],
 				param1.mpmc + param2.mpmc);
 	}
+}
+
+static rte_atomic32_t synchro;
+static uint64_t queue_count[RTE_MAX_LCORE];
+
+#define TIME_MS 100
+
+static int
+load_loop_fn(void *p)
+{
+	uint64_t time_diff = 0;
+	uint64_t begin = 0;
+	uint64_t hz = rte_get_timer_hz();
+	uint64_t lcount = 0;
+	const unsigned int lcore = rte_lcore_id();
+	struct thread_params *params = p;
+	void *burst[MAX_BURST] = {0};
+
+	/* wait synchro for slaves */
+	if (lcore != rte_get_master_lcore())
+		while (rte_atomic32_read(&synchro) == 0)
+			rte_pause();
+
+	begin = rte_get_timer_cycles();
+	while (time_diff < hz * TIME_MS / 1000) {
+		rte_ring_mp_enqueue_bulk(params->r, burst, params->size, NULL);
+		rte_ring_mc_dequeue_bulk(params->r, burst, params->size, NULL);
+		lcount++;
+		time_diff = rte_get_timer_cycles() - begin;
+	}
+	queue_count[lcore] = lcount;
+	return 0;
+}
+
+static int
+run_on_all_cores(struct rte_ring *r)
+{
+	uint64_t total = 0;
+	struct thread_params param;
+	unsigned int i, c;
+
+	memset(&param, 0, sizeof(struct thread_params));
+	for (i = 0; i < RTE_DIM(bulk_sizes); i++) {
+		printf("\nBulk enq/dequeue count on size %u\n", bulk_sizes[i]);
+		param.size = bulk_sizes[i];
+		param.r = r;
+
+		/* clear synchro and start slaves */
+		rte_atomic32_set(&synchro, 0);
+		if (rte_eal_mp_remote_launch(load_loop_fn, &param,
+			SKIP_MASTER) < 0)
+			return -1;
+
+		/* start synchro and launch test on master */
+		rte_atomic32_set(&synchro, 1);
+		load_loop_fn(&param);
+
+		rte_eal_mp_wait_lcore();
+
+		RTE_LCORE_FOREACH(c) {
+			printf("Core [%u] count = %"PRIu64"\n",
+					c, queue_count[c]);
+			total += queue_count[c];
+		}
+
+		printf("Total count (size: %u): %"PRIu64"\n",
+				bulk_sizes[i], total);
+	}
+
+	return 0;
 }
 
 /*
@@ -396,6 +477,10 @@ test_ring_perf(void)
 		printf("\n### Testing using two NUMA nodes ###\n");
 		run_on_core_pair(&cores, r, enqueue_bulk, dequeue_bulk);
 	}
+
+	printf("\n### Testing using all slave nodes ###\n");
+	run_on_all_cores(r);
+
 	rte_ring_free(r);
 	return 0;
 }

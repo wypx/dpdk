@@ -63,7 +63,6 @@ enum rte_kernel_driver {
 	RTE_KDRV_VFIO,
 	RTE_KDRV_UIO_GENERIC,
 	RTE_KDRV_NIC_UIO,
-	RTE_KDRV_NIC_MLX,
 	RTE_KDRV_NONE,
 };
 
@@ -349,7 +348,7 @@ rte_dev_iterator_next(struct rte_dev_iterator *it);
  * @b EXPERIMENTAL: this API may change without prior notice
  *
  * It registers the callback for the specific device.
- * Multiple callbacks cal be registered at the same time.
+ * Multiple callbacks can be registered at the same time.
  *
  * @param device_name
  *  The device name, that is the param name of the struct rte_device,
@@ -363,7 +362,8 @@ rte_dev_iterator_next(struct rte_dev_iterator *it);
  *  - On success, zero.
  *  - On failure, a negative value.
  */
-int __rte_experimental
+__rte_experimental
+int
 rte_dev_event_callback_register(const char *device_name,
 				rte_dev_event_cb_fn cb_fn,
 				void *cb_arg);
@@ -387,7 +387,8 @@ rte_dev_event_callback_register(const char *device_name,
  *  - On success, return the number of callback entities removed.
  *  - On failure, a negative value.
  */
-int __rte_experimental
+__rte_experimental
+int
 rte_dev_event_callback_unregister(const char *device_name,
 				  rte_dev_event_cb_fn cb_fn,
 				  void *cb_arg);
@@ -404,7 +405,8 @@ rte_dev_event_callback_unregister(const char *device_name,
  * @param event
  *  the device event type.
  */
-void  __rte_experimental
+__rte_experimental
+void
 rte_dev_event_callback_process(const char *device_name,
 			       enum rte_dev_event_type event);
 
@@ -418,7 +420,8 @@ rte_dev_event_callback_process(const char *device_name,
  *   - On success, zero.
  *   - On failure, a negative value.
  */
-int __rte_experimental
+__rte_experimental
+int
 rte_dev_event_monitor_start(void);
 
 /**
@@ -431,7 +434,8 @@ rte_dev_event_monitor_start(void);
  *   - On success, zero.
  *   - On failure, a negative value.
  */
-int __rte_experimental
+__rte_experimental
+int
 rte_dev_event_monitor_stop(void);
 
 /**
@@ -444,7 +448,8 @@ rte_dev_event_monitor_stop(void);
  *   - On success, zero.
  *   - On failure, a negative value.
  */
-int __rte_experimental
+__rte_experimental
+int
 rte_dev_hotplug_handle_enable(void);
 
 /**
@@ -457,7 +462,8 @@ rte_dev_hotplug_handle_enable(void);
  *   - On success, zero.
  *   - On failure, a negative value.
  */
-int __rte_experimental
+__rte_experimental
+int
 rte_dev_hotplug_handle_disable(void);
 
 /**
@@ -480,7 +486,8 @@ rte_dev_hotplug_handle_disable(void);
  *	0 if mapping was successful.
  *	Negative value and rte_errno is set otherwise.
  */
-int __rte_experimental
+__rte_experimental
+int
 rte_dev_dma_map(struct rte_device *dev, void *addr, uint64_t iova, size_t len);
 
 /**
@@ -503,7 +510,8 @@ rte_dev_dma_map(struct rte_device *dev, void *addr, uint64_t iova, size_t len);
  *	0 if un-mapping was successful.
  *	Negative value and rte_errno is set otherwise.
  */
-int __rte_experimental
+__rte_experimental
+int
 rte_dev_dma_unmap(struct rte_device *dev, void *addr, uint64_t iova,
 		  size_t len);
 

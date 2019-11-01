@@ -66,7 +66,6 @@ struct memif_queue {
 	/* rx/tx info */
 	uint64_t n_pkts;			/**< number of rx/tx packets */
 	uint64_t n_bytes;			/**< number of rx/tx bytes */
-	uint64_t n_err;				/**< number of tx errors */
 
 	memif_ring_t *ring;			/**< pointer to ring */
 
@@ -92,10 +91,6 @@ struct pmd_internals {
 	char secret[ETH_MEMIF_SECRET_SIZE]; /**< secret (optional security parameter) */
 
 	struct memif_control_channel *cc;	/**< control channel */
-
-	struct memif_region *regions[ETH_MEMIF_MAX_REGION_NUM];
-	/**< shared memory regions */
-	memif_region_index_t regions_num;	/**< number of regions */
 
 	/* remote info */
 	char remote_name[RTE_DEV_NAME_MAX_LEN];		/**< remote app name */
@@ -124,13 +119,19 @@ struct pmd_internals {
 	struct rte_vdev_device *vdev;		/**< vdev handle */
 };
 
+struct pmd_process_private {
+	struct memif_region *regions[ETH_MEMIF_MAX_REGION_NUM];
+	/**< shared memory regions */
+	memif_region_index_t regions_num;	/**< number of regions */
+};
+
 /**
  * Unmap shared memory and free regions from memory.
  *
- * @param pmd
- *   device internals
+ * @param proc_private
+ *   device process private data
  */
-void memif_free_regions(struct pmd_internals *pmd);
+void memif_free_regions(struct pmd_process_private *proc_private);
 
 /**
  * Finalize connection establishment process. Map shared memory file

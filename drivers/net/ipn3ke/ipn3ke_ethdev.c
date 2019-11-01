@@ -48,7 +48,6 @@ ipn3ke_indirect_read(struct ipn3ke_hw *hw, uint32_t *rd_data,
 	if (eth_group_sel != 0 && eth_group_sel != 1)
 		return -1;
 
-	addr &= 0x3FF;
 	target_addr = addr | dev_sel << 17;
 
 	indirect_value = RCMD | target_addr << 32;
@@ -86,7 +85,6 @@ ipn3ke_indirect_write(struct ipn3ke_hw *hw, uint32_t wr_data,
 	if (eth_group_sel != 0 && eth_group_sel != 1)
 		return -1;
 
-	addr &= 0x3FF;
 	target_addr = addr | dev_sel << 17;
 
 	indirect_value = WCMD | target_addr << 32 | wr_data;
@@ -192,6 +190,109 @@ ipn3ke_hw_cap_init(struct ipn3ke_hw *hw)
 }
 
 static int
+ipn3ke_vbng_init_done(struct ipn3ke_hw *hw)
+{
+	uint32_t timeout = 10000;
+	while (timeout > 0) {
+		if (IPN3KE_READ_REG(hw, IPN3KE_VBNG_INIT_STS)
+			== IPN3KE_VBNG_INIT_DONE)
+			break;
+		rte_delay_us(1000);
+		timeout--;
+	}
+
+	if (!timeout) {
+		IPN3KE_AFU_PMD_ERR("IPN3KE vBNG INIT timeout.\n");
+		return -1;
+	}
+
+	return 0;
+}
+
+static uint32_t
+ipn3ke_mtu_cal(uint32_t tx, uint32_t rx)
+{
+	uint32_t tmp;
+	tmp = RTE_MIN(tx, rx);
+	tmp = RTE_MAX(tmp, (uint32_t)RTE_ETHER_MIN_MTU);
+	tmp = RTE_MIN(tmp, (uint32_t)(IPN3KE_MAC_FRAME_SIZE_MAX -
+		IPN3KE_ETH_OVERHEAD));
+	return tmp;
+}
+
+static void
+ipn3ke_mtu_set(struct ipn3ke_hw *hw, uint32_t mac_num,
+	uint32_t eth_group_sel, uint32_t txaddr, uint32_t rxaddr)
+{
+	uint32_t tx;
+	uint32_t rx;
+	uint32_t tmp;
+
+	if (!(*hw->f_mac_read) || !(*hw->f_mac_write))
+		return;
+
+	(*hw->f_mac_read)(hw,
+			&tx,
+			txaddr,
+			mac_num,
+			eth_group_sel);
+
+	(*hw->f_mac_read)(hw,
+			&rx,
+			rxaddr,
+			mac_num,
+			eth_group_sel);
+
+	tmp = ipn3ke_mtu_cal(tx, rx);
+
+	(*hw->f_mac_write)(hw,
+			tmp,
+			txaddr,
+			mac_num,
+			eth_group_sel);
+
+	(*hw->f_mac_write)(hw,
+			tmp,
+			rxaddr,
+			mac_num,
+			eth_group_sel);
+}
+
+static void
+ipn3ke_10G_mtu_setup(struct ipn3ke_hw *hw, uint32_t mac_num,
+	uint32_t eth_group_sel)
+{
+	ipn3ke_mtu_set(hw, mac_num, eth_group_sel,
+		IPN3KE_10G_TX_FRAME_MAXLENGTH, IPN3KE_10G_RX_FRAME_MAXLENGTH);
+}
+
+static void
+ipn3ke_25G_mtu_setup(struct ipn3ke_hw *hw, uint32_t mac_num,
+	uint32_t eth_group_sel)
+{
+	ipn3ke_mtu_set(hw, mac_num, eth_group_sel,
+		IPN3KE_25G_MAX_TX_SIZE_CONFIG, IPN3KE_25G_MAX_RX_SIZE_CONFIG);
+}
+
+static void
+ipn3ke_mtu_setup(struct ipn3ke_hw *hw)
+{
+	int i;
+	if (hw->retimer.mac_type == IFPGA_RAWDEV_RETIMER_MAC_TYPE_10GE_XFI) {
+		for (i = 0; i < hw->port_num; i++) {
+			ipn3ke_10G_mtu_setup(hw, i, 0);
+			ipn3ke_10G_mtu_setup(hw, i, 1);
+		}
+	} else if (hw->retimer.mac_type ==
+			IFPGA_RAWDEV_RETIMER_MAC_TYPE_25GE_25GAUI) {
+		for (i = 0; i < hw->port_num; i++) {
+			ipn3ke_25G_mtu_setup(hw, i, 0);
+			ipn3ke_25G_mtu_setup(hw, i, 1);
+		}
+	}
+}
+
+static int
 ipn3ke_hw_init(struct rte_afu_device *afu_dev,
 	struct ipn3ke_hw *hw)
 {
@@ -223,15 +324,24 @@ ipn3ke_hw_init(struct rte_afu_device *afu_dev,
 				"LineSideMACType", &mac_type);
 	hw->retimer.mac_type = (int)mac_type;
 
+	IPN3KE_AFU_PMD_DEBUG("UPL_version is 0x%x\n", IPN3KE_READ_REG(hw, 0));
+
 	if (afu_dev->id.uuid.uuid_low == IPN3KE_UUID_VBNG_LOW &&
 		afu_dev->id.uuid.uuid_high == IPN3KE_UUID_VBNG_HIGH) {
-		ipn3ke_hw_cap_init(hw);
-		IPN3KE_AFU_PMD_DEBUG("UPL_version is 0x%x\n",
-			IPN3KE_READ_REG(hw, 0));
+		/* After power on, wait until init done */
+		if (ipn3ke_vbng_init_done(hw))
+			return -1;
 
-		/* Reset FPGA IP */
+		ipn3ke_hw_cap_init(hw);
+
+		/* Reset vBNG IP */
 		IPN3KE_WRITE_REG(hw, IPN3KE_CTRL_RESET, 1);
+		rte_delay_us(10);
 		IPN3KE_WRITE_REG(hw, IPN3KE_CTRL_RESET, 0);
+
+		/* After reset, wait until init done */
+		if (ipn3ke_vbng_init_done(hw))
+			return -1;
 	}
 
 	if (hw->retimer.mac_type == IFPGA_RAWDEV_RETIMER_MAC_TYPE_10GE_XFI) {
@@ -246,13 +356,38 @@ ipn3ke_hw_init(struct rte_afu_device *afu_dev,
 			/* Enable the RX path */
 			ipn3ke_xmac_rx_enable(hw, i, 1);
 
-			/* Clear all TX statistics counters */
-			ipn3ke_xmac_tx_clr_stcs(hw, i, 1);
+			/* Clear NIC side TX statistics counters */
+			ipn3ke_xmac_tx_clr_10G_stcs(hw, i, 1);
 
-			/* Clear all RX statistics counters */
-			ipn3ke_xmac_rx_clr_stcs(hw, i, 1);
+			/* Clear NIC side RX statistics counters */
+			ipn3ke_xmac_rx_clr_10G_stcs(hw, i, 1);
+
+			/* Clear line side TX statistics counters */
+			ipn3ke_xmac_tx_clr_10G_stcs(hw, i, 0);
+
+			/* Clear line RX statistics counters */
+			ipn3ke_xmac_rx_clr_10G_stcs(hw, i, 0);
+		}
+	} else if (hw->retimer.mac_type ==
+			IFPGA_RAWDEV_RETIMER_MAC_TYPE_25GE_25GAUI) {
+		/* Enable inter connect channel */
+		for (i = 0; i < hw->port_num; i++) {
+			/* Clear NIC side TX statistics counters */
+			ipn3ke_xmac_tx_clr_25G_stcs(hw, i, 1);
+
+			/* Clear NIC side RX statistics counters */
+			ipn3ke_xmac_rx_clr_25G_stcs(hw, i, 1);
+
+			/* Clear line side TX statistics counters */
+			ipn3ke_xmac_tx_clr_25G_stcs(hw, i, 0);
+
+			/* Clear line side RX statistics counters */
+			ipn3ke_xmac_rx_clr_25G_stcs(hw, i, 0);
 		}
 	}
+
+	/* init mtu */
+	ipn3ke_mtu_setup(hw);
 
 	ret = rte_eth_switch_domain_alloc(&hw->switch_domain_id);
 	if (ret)
@@ -293,11 +428,32 @@ ipn3ke_hw_uninit(struct ipn3ke_hw *hw)
 			/* Disable the RX path */
 			ipn3ke_xmac_rx_disable(hw, i, 1);
 
-			/* Clear all TX statistics counters */
-			ipn3ke_xmac_tx_clr_stcs(hw, i, 1);
+			/* Clear NIC side TX statistics counters */
+			ipn3ke_xmac_tx_clr_10G_stcs(hw, i, 1);
 
-			/* Clear all RX statistics counters */
-			ipn3ke_xmac_rx_clr_stcs(hw, i, 1);
+			/* Clear NIC side RX statistics counters */
+			ipn3ke_xmac_rx_clr_10G_stcs(hw, i, 1);
+
+			/* Clear line side TX statistics counters */
+			ipn3ke_xmac_tx_clr_10G_stcs(hw, i, 0);
+
+			/* Clear line side RX statistics counters */
+			ipn3ke_xmac_rx_clr_10G_stcs(hw, i, 0);
+		}
+	} else if (hw->retimer.mac_type ==
+			IFPGA_RAWDEV_RETIMER_MAC_TYPE_25GE_25GAUI) {
+		for (i = 0; i < hw->port_num; i++) {
+			/* Clear NIC side TX statistics counters */
+			ipn3ke_xmac_tx_clr_25G_stcs(hw, i, 1);
+
+			/* Clear NIC side RX statistics counters */
+			ipn3ke_xmac_rx_clr_25G_stcs(hw, i, 1);
+
+			/* Clear line side TX statistics counters */
+			ipn3ke_xmac_tx_clr_25G_stcs(hw, i, 0);
+
+			/* Clear line side RX statistics counters */
+			ipn3ke_xmac_rx_clr_25G_stcs(hw, i, 0);
 		}
 	}
 }

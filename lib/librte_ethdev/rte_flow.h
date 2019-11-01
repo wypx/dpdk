@@ -27,6 +27,7 @@
 #include <rte_udp.h>
 #include <rte_byteorder.h>
 #include <rte_esp.h>
+#include <rte_higig.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -421,7 +422,105 @@ enum rte_flow_item_type {
 	 * See struct rte_flow_item_meta.
 	 */
 	RTE_FLOW_ITEM_TYPE_META,
+
+	/**
+	 * Matches a GRE optional key field.
+	 *
+	 * The value should a big-endian 32bit integer.
+	 *
+	 * When this item present the K bit is implicitly matched as "1"
+	 * in the default mask.
+	 *
+	 * @p spec/mask type:
+	 * @code rte_be32_t * @endcode
+	 */
+	RTE_FLOW_ITEM_TYPE_GRE_KEY,
+
+	/**
+	 * Matches a GTP extension header: PDU session container.
+	 *
+	 * Configure flow for GTP packets with extension header type 0x85.
+	 *
+	 * See struct rte_flow_item_gtp_psc.
+	 */
+	RTE_FLOW_ITEM_TYPE_GTP_PSC,
+
+	/**
+	 * Matches a PPPoE header.
+	 *
+	 * Configure flow for PPPoE session packets.
+	 *
+	 * See struct rte_flow_item_pppoe.
+	 */
+	RTE_FLOW_ITEM_TYPE_PPPOES,
+
+	/**
+	 * Matches a PPPoE header.
+	 *
+	 * Configure flow for PPPoE discovery packets.
+	 *
+	 * See struct rte_flow_item_pppoe.
+	 */
+	RTE_FLOW_ITEM_TYPE_PPPOED,
+
+	/**
+	 * Matches a PPPoE optional proto_id field.
+	 *
+	 * It only applies to PPPoE session packets.
+	 *
+	 * See struct rte_flow_item_pppoe_proto_id.
+	 */
+	RTE_FLOW_ITEM_TYPE_PPPOE_PROTO_ID,
+
+	/**
+	 * Matches Network service header (NSH).
+	 * See struct rte_flow_item_nsh.
+	 *
+	 */
+	RTE_FLOW_ITEM_TYPE_NSH,
+
+	/**
+	 * Matches Internet Group Management Protocol (IGMP).
+	 * See struct rte_flow_item_igmp.
+	 *
+	 */
+	RTE_FLOW_ITEM_TYPE_IGMP,
+
+	/**
+	 * Matches IP Authentication Header (AH).
+	 * See struct rte_flow_item_ah.
+	 *
+	 */
+	RTE_FLOW_ITEM_TYPE_AH,
+
+	/**
+	 * Matches a HIGIG header.
+	 * see struct rte_flow_item_higig2_hdr.
+	 */
+	RTE_FLOW_ITEM_TYPE_HIGIG2,
 };
+
+/**
+ *
+ * RTE_FLOW_ITEM_TYPE_HIGIG2
+ * Matches higig2 header
+ */
+RTE_STD_C11
+struct rte_flow_item_higig2_hdr {
+	struct rte_higig2_hdr hdr;
+};
+
+/** Default mask for RTE_FLOW_ITEM_TYPE_HIGIG2. */
+#ifndef __cplusplus
+static const struct rte_flow_item_higig2_hdr rte_flow_item_higig2_hdr_mask = {
+	.hdr = {
+		.ppt1 = {
+			.classification = 0xffff,
+			.vid = 0xfff,
+		},
+	},
+};
+#endif
 
 /**
  * RTE_FLOW_ITEM_TYPE_ANY
@@ -922,7 +1021,7 @@ struct rte_flow_item_esp {
 #ifndef __cplusplus
 static const struct rte_flow_item_esp rte_flow_item_esp_mask = {
 	.hdr = {
-		.spi = 0xffffffff,
+		.spi = RTE_BE32(0xffffffff),
 	},
 };
 #endif
@@ -1180,6 +1279,63 @@ static const struct rte_flow_item_meta rte_flow_item_meta_mask = {
 #endif
 
 /**
+ * RTE_FLOW_ITEM_TYPE_GTP_PSC.
+ *
+ * Matches a GTP PDU extension header with type 0x85.
+ */
+struct rte_flow_item_gtp_psc {
+	uint8_t pdu_type; /**< PDU type. */
+	uint8_t qfi; /**< QoS flow identifier. */
+};
+
+/** Default mask for RTE_FLOW_ITEM_TYPE_GTP_PSC. */
+#ifndef __cplusplus
+static const struct rte_flow_item_gtp_psc
+rte_flow_item_gtp_psc_mask = {
+	.qfi = 0x3f,
+};
+#endif
+
+/**
+ * RTE_FLOW_ITEM_TYPE_PPPOE.
+ *
+ * Matches a PPPoE header.
+ */
+struct rte_flow_item_pppoe {
+	/**
+	 * Version (4b), type (4b).
+	 */
+	uint8_t version_type;
+	uint8_t code; /**< Message type. */
+	rte_be16_t session_id; /**< Session identifier. */
+	rte_be16_t length; /**< Payload length. */
+};
+
+/**
+ * RTE_FLOW_ITEM_TYPE_PPPOE_PROTO_ID.
+ *
+ * Matches a PPPoE optional proto_id field.
+ *
+ * It only applies to PPPoE session packets.
+ *
+ * Normally preceded by any of:
+ *
+ * - RTE_FLOW_ITEM_TYPE_PPPOE
+ * - RTE_FLOW_ITEM_TYPE_PPPOE_PROTO_ID
+ */
+struct rte_flow_item_pppoe_proto_id {
+	rte_be16_t proto_id; /**< PPP protocol identifier. */
+};
+
+/** Default mask for RTE_FLOW_ITEM_TYPE_PPPOE_PROTO_ID. */
+#ifndef __cplusplus
+static const struct rte_flow_item_pppoe_proto_id
+rte_flow_item_pppoe_proto_id_mask = {
+	.proto_id = RTE_BE16(0xffff),
+};
+#endif
+
+/**
  * @warning
  * @b EXPERIMENTAL: this structure may change without prior notice
  *
@@ -1200,6 +1356,85 @@ static const struct rte_flow_item_meta rte_flow_item_meta_mask = {
 struct rte_flow_item_mark {
 	uint32_t id; /**< Integer value to match against. */
 };
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this structure may change without prior notice
+ *
+ * RTE_FLOW_ITEM_TYPE_NSH
+ *
+ * Match network service header (NSH), RFC 8300
+ *
+ */
+struct rte_flow_item_nsh {
+	uint32_t version:2;
+	uint32_t oam_pkt:1;
+	uint32_t reserved:1;
+	uint32_t ttl:6;
+	uint32_t length:6;
+	uint32_t reserved1:4;
+	uint32_t mdtype:4;
+	uint32_t next_proto:8;
+	uint32_t spi:24;
+	uint32_t sindex:8;
+};
+
+/** Default mask for RTE_FLOW_ITEM_TYPE_NSH. */
+#ifndef __cplusplus
+static const struct rte_flow_item_nsh rte_flow_item_nsh_mask = {
+	.mdtype = 0xf,
+	.next_proto = 0xff,
+	.spi = 0xffffff,
+	.sindex = 0xff,
+};
+#endif
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this structure may change without prior notice
+ *
+ * RTE_FLOW_ITEM_TYPE_IGMP
+ *
+ * Match Internet Group Management Protocol (IGMP), RFC 2236
+ *
+ */
+struct rte_flow_item_igmp {
+	uint32_t type:8;
+	uint32_t max_resp_time:8;
+	uint32_t checksum:16;
+	uint32_t group_addr;
+};
+
+/** Default mask for RTE_FLOW_ITEM_TYPE_IGMP. */
+#ifndef __cplusplus
+static const struct rte_flow_item_igmp rte_flow_item_igmp_mask = {
+	.group_addr = 0xffffffff,
+};
+#endif
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this structure may change without prior notice
+ *
+ * RTE_FLOW_ITEM_TYPE_AH
+ *
+ * Match IP Authentication Header (AH), RFC 4302
+ *
+ */
+struct rte_flow_item_ah {
+	uint32_t next_hdr:8;
+	uint32_t payload_len:8;
+	uint32_t reserved:16;
+	uint32_t spi;
+	uint32_t seq_num;
+};
+
+/** Default mask for RTE_FLOW_ITEM_TYPE_AH. */
+#ifndef __cplusplus
+static const struct rte_flow_item_ah rte_flow_item_ah_mask = {
+	.spi = 0xffffffff,
+};
+#endif
 
 /**
  * Matching pattern item definition.
@@ -1244,9 +1479,10 @@ struct rte_flow_item {
 /**
  * Action types.
  *
- * Each possible action is represented by a type. Some have associated
- * configuration structures. Several actions combined in a list can be
- * assigned to a flow rule and are performed in order.
+ * Each possible action is represented by a type.
+ * An action can have an associated configuration object.
+ * Several actions combined in a list can be assigned
+ * to a flow rule and are performed in order.
  *
  * They fall in three categories:
  *
@@ -1650,6 +1886,62 @@ enum rte_flow_action_type {
 	 * See struct rte_flow_action_set_mac.
 	 */
 	RTE_FLOW_ACTION_TYPE_SET_MAC_DST,
+
+	/**
+	 * Increase sequence number in the outermost TCP header.
+	 *
+	 * Action configuration specifies the value to increase
+	 * TCP sequence number as a big-endian 32 bit integer.
+	 *
+	 * @p conf type:
+	 * @code rte_be32_t * @endcode
+	 *
+	 * Using this action on non-matching traffic will result in
+	 * undefined behavior.
+	 */
+	RTE_FLOW_ACTION_TYPE_INC_TCP_SEQ,
+
+	/**
+	 * Decrease sequence number in the outermost TCP header.
+	 *
+	 * Action configuration specifies the value to decrease
+	 * TCP sequence number as a big-endian 32 bit integer.
+	 *
+	 * @p conf type:
+	 * @code rte_be32_t * @endcode
+	 *
+	 * Using this action on non-matching traffic will result in
+	 * undefined behavior.
+	 */
+	RTE_FLOW_ACTION_TYPE_DEC_TCP_SEQ,
+
+	/**
+	 * Increase acknowledgment number in the outermost TCP header.
+	 *
+	 * Action configuration specifies the value to increase
+	 * TCP acknowledgment number as a big-endian 32 bit integer.
+	 *
+	 * @p conf type:
+	 * @code rte_be32_t * @endcode
+
+	 * Using this action on non-matching traffic will result in
+	 * undefined behavior.
+	 */
+	RTE_FLOW_ACTION_TYPE_INC_TCP_ACK,
+
+	/**
+	 * Decrease acknowledgment number in the outermost TCP header.
+	 *
+	 * Action configuration specifies the value to decrease
+	 * TCP acknowledgment number as a big-endian 32 bit integer.
+	 *
+	 * @p conf type:
+	 * @code rte_be32_t * @endcode
+	 *
+	 * Using this action on non-matching traffic will result in
+	 * undefined behavior.
+	 */
+	RTE_FLOW_ACTION_TYPE_DEC_TCP_ACK,
 };
 
 /**
@@ -1744,6 +2036,12 @@ enum rte_eth_hash_function {
 	RTE_ETH_HASH_FUNCTION_DEFAULT = 0,
 	RTE_ETH_HASH_FUNCTION_TOEPLITZ, /**< Toeplitz */
 	RTE_ETH_HASH_FUNCTION_SIMPLE_XOR, /**< Simple XOR */
+	/**
+	 * Symmetric Toeplitz: src, dst will be replaced by
+	 * xor(src, dst). For the case with src/dst only,
+	 * src or dst address will xor with zero pair.
+	 */
+	RTE_ETH_HASH_FUNCTION_SYMMETRIC_TOEPLITZ,
 	RTE_ETH_HASH_FUNCTION_MAX,
 };
 
@@ -2136,11 +2434,11 @@ struct rte_flow_action_set_mac {
  *
  * A list of actions is terminated by a END action.
  *
- * For simple actions without a configuration structure, conf remains NULL.
+ * For simple actions without a configuration object, conf remains NULL.
  */
 struct rte_flow_action {
 	enum rte_flow_action_type type; /**< Action type. */
-	const void *conf; /**< Pointer to action configuration structure. */
+	const void *conf; /**< Pointer to action configuration object. */
 };
 
 /**

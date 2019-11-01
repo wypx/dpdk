@@ -21,6 +21,7 @@
 #include "compat.h"
 #include "kni_dev.h"
 
+MODULE_VERSION(KNI_VERSION);
 MODULE_LICENSE("Dual BSD/GPL");
 MODULE_AUTHOR("Intel Corporation");
 MODULE_DESCRIPTION("Kernel Module for managing kni devices");
@@ -301,11 +302,8 @@ kni_ioctl_create(struct net *net, uint32_t ioctl_num,
 		return -EINVAL;
 
 	/* Copy kni info from user space */
-	ret = copy_from_user(&dev_info, (void *)ioctl_param, sizeof(dev_info));
-	if (ret) {
-		pr_err("copy_from_user in kni_ioctl_create");
-		return -EIO;
-	}
+	if (copy_from_user(&dev_info, (void *)ioctl_param, sizeof(dev_info)))
+		return -EFAULT;
 
 	/* Check if name is zero-ended */
 	if (strnlen(dev_info.name, sizeof(dev_info.name)) == sizeof(dev_info.name)) {
@@ -346,7 +344,6 @@ kni_ioctl_create(struct net *net, uint32_t ioctl_num,
 	kni = netdev_priv(net_dev);
 
 	kni->net_dev = net_dev;
-	kni->group_id = dev_info.group_id;
 	kni->core_id = dev_info.core_id;
 	strncpy(kni->name, dev_info.name, RTE_KNI_NAMESIZE);
 
@@ -391,6 +388,12 @@ kni_ioctl_create(struct net *net, uint32_t ioctl_num,
 		net_dev->mtu = dev_info.mtu;
 #ifdef HAVE_MAX_MTU_PARAM
 	net_dev->max_mtu = net_dev->mtu;
+
+	if (dev_info.min_mtu)
+		net_dev->min_mtu = dev_info.min_mtu;
+
+	if (dev_info.max_mtu)
+		net_dev->max_mtu = dev_info.max_mtu;
 #endif
 
 	ret = register_netdev(net_dev);
@@ -428,15 +431,12 @@ kni_ioctl_release(struct net *net, uint32_t ioctl_num,
 	if (_IOC_SIZE(ioctl_num) > sizeof(dev_info))
 		return -EINVAL;
 
-	ret = copy_from_user(&dev_info, (void *)ioctl_param, sizeof(dev_info));
-	if (ret) {
-		pr_err("copy_from_user in kni_ioctl_release");
-		return -EIO;
-	}
+	if (copy_from_user(&dev_info, (void *)ioctl_param, sizeof(dev_info)))
+		return -EFAULT;
 
 	/* Release the network device according to its name */
 	if (strlen(dev_info.name) == 0)
-		return ret;
+		return -EINVAL;
 
 	down_write(&knet->kni_list_lock);
 	list_for_each_entry_safe(dev, n, &knet->kni_list_head, list) {

@@ -1360,6 +1360,7 @@ int ipn3ke_flow_init(void *dev)
 						IPN3KE_CLF_EM_NUM,
 						0,
 						0xFFFFFFFF);
+	IPN3KE_AFU_PMD_DEBUG("IPN3KE_CLF_EN_NUM: %x\n", hw->flow_max_entries);
 	hw->flow_num_entries = 0;
 
 	return 0;
@@ -1371,4 +1372,3 @@ const struct rte_flow_ops ipn3ke_flow_ops = {
 	.destroy = ipn3ke_flow_destroy,
 	.flush = ipn3ke_flow_flush,
 };
-

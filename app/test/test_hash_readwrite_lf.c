@@ -48,7 +48,7 @@
 #define WRITE_EXT_BKT 2
 
 #define NUM_TEST 3
-unsigned int rwc_core_cnt[NUM_TEST] = {1, 2, 4};
+static unsigned int rwc_core_cnt[NUM_TEST] = {1, 2, 4};
 
 struct rwc_perf {
 	uint32_t w_no_ks_r_hit[2][NUM_TEST];
@@ -62,7 +62,7 @@ struct rwc_perf {
 
 static struct rwc_perf rwc_lf_results, rwc_non_lf_results;
 
-struct {
+static struct {
 	uint32_t *keys;
 	uint32_t *keys_no_ks;
 	uint32_t *keys_ks;
@@ -87,9 +87,9 @@ static rte_atomic64_t greads;
 
 static volatile uint8_t writer_done;
 
-uint16_t enabled_core_ids[RTE_MAX_LCORE];
+static uint16_t enabled_core_ids[RTE_MAX_LCORE];
 
-uint8_t *scanned_bkts;
+static uint8_t *scanned_bkts;
 
 static inline uint16_t
 get_short_sig(const hash_sig_t hash)
@@ -126,11 +126,9 @@ get_enabled_cores_list(void)
 	uint32_t i = 0;
 	uint16_t core_id;
 	uint32_t max_cores = rte_lcore_count();
-	for (core_id = 0; core_id < RTE_MAX_LCORE && i < max_cores; core_id++) {
-		if (rte_lcore_is_enabled(core_id)) {
-			enabled_core_ids[i] = core_id;
-			i++;
-		}
+	RTE_LCORE_FOREACH(core_id) {
+		enabled_core_ids[i] = core_id;
+		i++;
 	}
 
 	if (i != max_cores) {
@@ -138,6 +136,52 @@ get_enabled_cores_list(void)
 			"number given by rte_lcore_count()\n");
 		return -1;
 	}
+	return 0;
+}
+
+static int
+init_params(int rwc_lf, int use_jhash, int htm, int ext_bkt)
+{
+	struct rte_hash *handle;
+
+	struct rte_hash_parameters hash_params = {
+		.entries = TOTAL_ENTRY,
+		.key_len = sizeof(uint32_t),
+		.hash_func_init_val = 0,
+		.socket_id = rte_socket_id(),
+	};
+
+	if (use_jhash)
+		hash_params.hash_func = rte_jhash;
+	else
+		hash_params.hash_func = rte_hash_crc;
+
+	if (rwc_lf)
+		hash_params.extra_flag =
+			RTE_HASH_EXTRA_FLAGS_RW_CONCURRENCY_LF |
+			RTE_HASH_EXTRA_FLAGS_MULTI_WRITER_ADD;
+	else if (htm)
+		hash_params.extra_flag =
+			RTE_HASH_EXTRA_FLAGS_TRANS_MEM_SUPPORT |
+			RTE_HASH_EXTRA_FLAGS_RW_CONCURRENCY |
+			RTE_HASH_EXTRA_FLAGS_MULTI_WRITER_ADD;
+	else
+		hash_params.extra_flag =
+			RTE_HASH_EXTRA_FLAGS_RW_CONCURRENCY |
+			RTE_HASH_EXTRA_FLAGS_MULTI_WRITER_ADD;
+
+	if (ext_bkt)
+		hash_params.extra_flag |= RTE_HASH_EXTRA_FLAGS_EXT_TABLE;
+
+	hash_params.name = "tests";
+
+	handle = rte_hash_create(&hash_params);
+	if (handle == NULL) {
+		printf("hash creation failed");
+		return -1;
+	}
+
+	tbl_rwc_test_param.h = handle;
 	return 0;
 }
 
@@ -214,6 +258,9 @@ generate_keys(void)
 	uint32_t count_keys_ks = 0;
 	uint32_t count_keys_extbkt = 0;
 	uint32_t i;
+
+	if (init_params(0, 0, 0, 0) != 0)
+		return -1;
 
 	/*
 	 * keys will consist of a) keys whose addition to the hash table
@@ -488,6 +535,7 @@ generate_keys(void)
 	       tbl_rwc_test_param.count_keys_ks_extbkt);
 
 	rte_free(found);
+	rte_free(scanned_bkts);
 	rte_hash_free(tbl_rwc_test_param.h);
 	return 0;
 
@@ -498,56 +546,12 @@ err:
 	rte_free(keys_absent);
 	rte_free(found);
 	rte_free(tbl_rwc_test_param.keys_shift_path);
+	rte_free(keys_non_shift_path);
 	rte_free(keys_ext_bkt);
 	rte_free(keys_ks_extbkt);
 	rte_free(scanned_bkts);
+	rte_hash_free(tbl_rwc_test_param.h);
 	return -1;
-}
-
-static int
-init_params(int rwc_lf, int use_jhash, int htm, int ext_bkt)
-{
-	struct rte_hash *handle;
-
-	struct rte_hash_parameters hash_params = {
-		.entries = TOTAL_ENTRY,
-		.key_len = sizeof(uint32_t),
-		.hash_func_init_val = 0,
-		.socket_id = rte_socket_id(),
-	};
-
-	if (use_jhash)
-		hash_params.hash_func = rte_jhash;
-	else
-		hash_params.hash_func = rte_hash_crc;
-
-	if (rwc_lf)
-		hash_params.extra_flag =
-			RTE_HASH_EXTRA_FLAGS_RW_CONCURRENCY_LF |
-			RTE_HASH_EXTRA_FLAGS_MULTI_WRITER_ADD;
-	else if (htm)
-		hash_params.extra_flag =
-			RTE_HASH_EXTRA_FLAGS_TRANS_MEM_SUPPORT |
-			RTE_HASH_EXTRA_FLAGS_RW_CONCURRENCY |
-			RTE_HASH_EXTRA_FLAGS_MULTI_WRITER_ADD;
-	else
-		hash_params.extra_flag =
-			RTE_HASH_EXTRA_FLAGS_RW_CONCURRENCY |
-			RTE_HASH_EXTRA_FLAGS_MULTI_WRITER_ADD;
-
-	if (ext_bkt)
-		hash_params.extra_flag |= RTE_HASH_EXTRA_FLAGS_EXT_TABLE;
-
-	hash_params.name = "tests";
-
-	handle = rte_hash_create(&hash_params);
-	if (handle == NULL) {
-		printf("hash creation failed");
-		return -1;
-	}
-
-	tbl_rwc_test_param.h = handle;
-	return 0;
 }
 
 static int
@@ -561,15 +565,8 @@ test_rwc_reader(__attribute__((unused)) void *arg)
 	uint32_t read_cnt;
 	uint32_t *keys;
 	uint32_t extra_keys;
-	int32_t *pos;
+	int32_t pos[BULK_LOOKUP_SIZE];
 	void *temp_a[BULK_LOOKUP_SIZE];
-
-	/* Used to identify keys not inserted in the hash table */
-	pos = rte_malloc(NULL, sizeof(uint32_t) * BULK_LOOKUP_SIZE, 0);
-	if (pos == NULL) {
-		printf("RTE_MALLOC failed\n");
-		return -1;
-	}
 
 	if (read_type & READ_FAIL) {
 		keys = tbl_rwc_test_param.keys_absent;
@@ -738,7 +735,7 @@ test_hash_add_no_ks_lookup_hit(struct rwc_perf *rwc_perf_results, int rwc_lf,
 							enabled_core_ids[i]);
 
 			for (i = 1; i <= rwc_core_cnt[n]; i++)
-				if (rte_eal_wait_lcore(i) < 0)
+				if (rte_eal_wait_lcore(enabled_core_ids[i]) < 0)
 					goto err;
 
 			unsigned long long cycles_per_lookup =
@@ -810,7 +807,7 @@ test_hash_add_no_ks_lookup_miss(struct rwc_perf *rwc_perf_results, int rwc_lf,
 			if (ret < 0)
 				goto err;
 			for (i = 1; i <= rwc_core_cnt[n]; i++)
-				if (rte_eal_wait_lcore(i) < 0)
+				if (rte_eal_wait_lcore(enabled_core_ids[i]) < 0)
 					goto err;
 
 			unsigned long long cycles_per_lookup =
@@ -886,7 +883,7 @@ test_hash_add_ks_lookup_hit_non_sp(struct rwc_perf *rwc_perf_results,
 			if (ret < 0)
 				goto err;
 			for (i = 1; i <= rwc_core_cnt[n]; i++)
-				if (rte_eal_wait_lcore(i) < 0)
+				if (rte_eal_wait_lcore(enabled_core_ids[i]) < 0)
 					goto err;
 
 			unsigned long long cycles_per_lookup =
@@ -939,7 +936,7 @@ test_hash_add_ks_lookup_hit_sp(struct rwc_perf *rwc_perf_results, int rwc_lf,
 		}
 		for (n = 0; n < NUM_TEST; n++) {
 			unsigned int tot_lcore = rte_lcore_count();
-			if (tot_lcore < rwc_core_cnt[n])
+			if (tot_lcore < rwc_core_cnt[n] + 1)
 				goto finish;
 
 			printf("\nNumber of readers: %u\n", rwc_core_cnt[n]);
@@ -962,7 +959,7 @@ test_hash_add_ks_lookup_hit_sp(struct rwc_perf *rwc_perf_results, int rwc_lf,
 			if (ret < 0)
 				goto err;
 			for (i = 1; i <= rwc_core_cnt[n]; i++)
-				if (rte_eal_wait_lcore(i) < 0)
+				if (rte_eal_wait_lcore(enabled_core_ids[i]) < 0)
 					goto err;
 
 			unsigned long long cycles_per_lookup =
@@ -1037,7 +1034,7 @@ test_hash_add_ks_lookup_miss(struct rwc_perf *rwc_perf_results, int rwc_lf, int
 			if (ret < 0)
 				goto err;
 			for (i = 1; i <= rwc_core_cnt[n]; i++)
-				if (rte_eal_wait_lcore(i) < 0)
+				if (rte_eal_wait_lcore(enabled_core_ids[i]) < 0)
 					goto err;
 
 			unsigned long long cycles_per_lookup =
@@ -1132,12 +1129,12 @@ test_hash_multi_add_lookup(struct rwc_perf *rwc_perf_results, int rwc_lf,
 				for (i = rwc_core_cnt[n] + 1;
 				     i <= rwc_core_cnt[m] + rwc_core_cnt[n];
 				     i++)
-					rte_eal_wait_lcore(i);
+					rte_eal_wait_lcore(enabled_core_ids[i]);
 
 				writer_done = 1;
 
 				for (i = 1; i <= rwc_core_cnt[n]; i++)
-					if (rte_eal_wait_lcore(i) < 0)
+					if (rte_eal_wait_lcore(enabled_core_ids[i]) < 0)
 						goto err;
 
 				unsigned long long cycles_per_lookup =
@@ -1221,7 +1218,7 @@ test_hash_add_ks_lookup_hit_extbkt(struct rwc_perf *rwc_perf_results,
 			writer_done = 1;
 
 			for (i = 1; i <= rwc_core_cnt[n]; i++)
-				if (rte_eal_wait_lcore(i) < 0)
+				if (rte_eal_wait_lcore(enabled_core_ids[i]) < 0)
 					goto err;
 
 			unsigned long long cycles_per_lookup =
@@ -1254,23 +1251,23 @@ test_hash_readwrite_lf_main(void)
 	 */
 	int rwc_lf = 0;
 	int htm;
-	int use_jhash = 0;
 	int ext_bkt = 0;
-	if (rte_lcore_count() == 1) {
-		printf("More than one lcore is required "
-			"to do read write lock-free concurrency test\n");
-		return -1;
+
+	if (rte_lcore_count() < 2) {
+		printf("Not enough cores for hash_readwrite_lf_autotest, expecting at least 2\n");
+		return TEST_SKIPPED;
 	}
 
 	setlocale(LC_NUMERIC, "");
+
+	/* Reset tbl_rwc_test_param to discard values from previous run */
+	memset(&tbl_rwc_test_param, 0, sizeof(tbl_rwc_test_param));
 
 	if (rte_tm_supported())
 		htm = 1;
 	else
 		htm = 0;
 
-	if (init_params(rwc_lf, use_jhash, htm, ext_bkt) != 0)
-		return -1;
 	if (generate_keys() != 0)
 		return -1;
 	if (get_enabled_cores_list() != 0)
@@ -1428,7 +1425,9 @@ results:
 	rte_free(tbl_rwc_test_param.keys_ks);
 	rte_free(tbl_rwc_test_param.keys_absent);
 	rte_free(tbl_rwc_test_param.keys_shift_path);
-	rte_free(scanned_bkts);
+	rte_free(tbl_rwc_test_param.keys_non_shift_path);
+	rte_free(tbl_rwc_test_param.keys_ext_bkt);
+	rte_free(tbl_rwc_test_param.keys_ks_extbkt);
 	return 0;
 }
 

@@ -16,7 +16,6 @@
 #include <rte_memcpy.h>
 #include <rte_memory.h>
 #include <rte_memzone.h>
-#include <rte_eal_memconfig.h>
 
 #include "opdl_ring.h"
 #include "opdl_log.h"
@@ -756,7 +755,7 @@ int
 opdl_stage_disclaim(struct opdl_stage *s, uint32_t num_entries, bool block)
 {
 	if (num_entries != s->num_event) {
-		rte_errno = -EINVAL;
+		rte_errno = EINVAL;
 		return 0;
 	}
 	if (s->threadsafe == false) {

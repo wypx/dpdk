@@ -149,9 +149,9 @@ Note that marking an API as experimental is a multi step process.
 To mark an API as experimental, the symbols which are desired to be exported
 must be placed in an EXPERIMENTAL version block in the corresponding libraries'
 version map script.
-Secondly, the corresponding definitions of those exported functions, and
-their forward declarations (in the development header files), must be marked
-with the ``__rte_experimental`` tag (see ``rte_compat.h``).
+Secondly, the corresponding prototypes of those exported functions (in the
+development header files), must be marked with the ``__rte_experimental`` tag
+(see ``rte_compat.h``).
 The DPDK build makefiles perform a check to ensure that the map file and the
 C code reflect the same list of symbols.
 This check can be circumvented by defining ``ALLOW_EXPERIMENTAL_API``
@@ -206,7 +206,7 @@ functionality or behavior. When that occurs, it is desirable to allow for
 backward compatibility for a time with older binaries that are dynamically
 linked to the DPDK.
 
-To support backward compatibility the ``rte_compat.h``
+To support backward compatibility the ``rte_function_versioning.h``
 header file provides macros to use when updating exported functions. These
 macros are used in conjunction with the ``rte_<library>_version.map`` file for
 a given library to allow multiple versions of a symbol to exist in a shared
@@ -362,7 +362,7 @@ the function, we add this line of code
 
    VERSION_SYMBOL(rte_acl_create, _v20, 2.0);
 
-Remembering to also add the rte_compat.h header to the requisite c file where
+Remembering to also add the rte_function_versioning.h header to the requisite c file where
 these changes are being made.  The above macro instructs the linker to create a
 new symbol ``rte_acl_create@DPDK_2.0``, which matches the symbol created in older
 builds, but now points to the above newly named function.  We have now mapped

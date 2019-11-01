@@ -75,7 +75,6 @@ Trees and maintainers are listed in the ``MAINTAINERS`` file. For example::
     Crypto Drivers
     --------------
     M: Some Name <some.name@email.com>
-    B: Another Name <another.name@email.com>
     T: git://dpdk.org/next/dpdk-next-crypto
 
     Intel AES-NI GCM PMD
@@ -86,7 +85,6 @@ Trees and maintainers are listed in the ``MAINTAINERS`` file. For example::
 Where:
 
 * ``M`` is a tree or component maintainer.
-* ``B`` is a tree backup maintainer.
 * ``T`` is a repository tree.
 * ``F`` is a maintained file or directory.
 
@@ -147,6 +145,16 @@ Make your planned changes in the cloned ``dpdk`` repo. Here are some guidelines 
 * Follow the :ref:`coding_style` guidelines.
 
 * If you add new files or directories you should add your name to the ``MAINTAINERS`` file.
+
+* Initial submission of new PMDs should be prepared against a corresponding repo.
+
+  * Thus, for example, initial submission of a new network PMD should be
+    prepared against dpdk-next-net repo.
+
+  * Likewise, initial submission of a new crypto or compression PMD should be
+    prepared against dpdk-next-crypto repo.
+
+  * For other PMDs and more info, refer to the ``MAINTAINERS`` file.
 
 * New external functions should be added to the local ``version.map`` file.
   See the :doc:`Guidelines for ABI policy and versioning </contributing/versioning>`.
@@ -648,12 +656,3 @@ patch accepted. The general cycle for patch review and acceptance is:
      than rework of the original.
    * Trivial patches may be merged sooner than described above at the tree committer's
      discretion.
-
-DPDK Maintainers
-----------------
-
-The following are the DPDK maintainers as listed in the ``MAINTAINERS`` file
-in the DPDK root directory.
-
-.. literalinclude:: ../../../MAINTAINERS
-   :lines: 3-

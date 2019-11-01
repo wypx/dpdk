@@ -20,7 +20,6 @@
 #include <rte_memory.h>
 #include <rte_common.h>
 #include <rte_vect.h>
-#include <rte_compat.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -88,7 +87,7 @@ struct rte_lpm_tbl_entry_v20 {
 	 */
 	uint8_t valid_group :1;
 	uint8_t depth       :6; /**< Rule depth. */
-};
+} __rte_aligned(sizeof(uint16_t));
 
 __extension__
 struct rte_lpm_tbl_entry {
@@ -121,7 +120,7 @@ struct rte_lpm_tbl_entry_v20 {
 		uint8_t group_idx;
 		uint8_t next_hop;
 	};
-};
+} __rte_aligned(sizeof(uint16_t));
 
 __extension__
 struct rte_lpm_tbl_entry {
@@ -354,6 +353,10 @@ rte_lpm_lookup(struct rte_lpm *lpm, uint32_t ip, uint32_t *next_hop)
 	ptbl = (const uint32_t *)(&lpm->tbl24[tbl24_index]);
 	tbl_entry = *ptbl;
 
+	/* Memory ordering is not required in lookup. Because dataflow
+	 * dependency exists, compiler or HW won't be able to re-order
+	 * the operations.
+	 */
 	/* Copy tbl8 entry (only if needed) */
 	if (unlikely((tbl_entry & RTE_LPM_VALID_EXT_ENTRY_BITMASK) ==
 			RTE_LPM_VALID_EXT_ENTRY_BITMASK)) {

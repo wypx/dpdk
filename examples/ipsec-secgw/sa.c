@@ -27,6 +27,10 @@
 
 #define IPDEFTTL 64
 
+#define IP4_FULL_MASK (sizeof(((struct ip_addr *)NULL)->ip.ip4) * CHAR_BIT)
+
+#define IP6_FULL_MASK (sizeof(((struct ip_addr *)NULL)->ip.ip6.ip6) * CHAR_BIT)
+
 struct supported_cipher_algo {
 	const char *keyword;
 	enum rte_crypto_cipher_algorithm algo;
@@ -468,7 +472,7 @@ parse_sa_tokens(char **tokens, uint32_t n_tokens,
 			if (status->status < 0)
 				return;
 
-			if (rule->flags == IP4_TUNNEL) {
+			if (IS_IP4_TUNNEL(rule->flags)) {
 				struct in_addr ip;
 
 				APP_CHECK(parse_ipv4_addr(tokens[ti],
@@ -480,7 +484,7 @@ parse_sa_tokens(char **tokens, uint32_t n_tokens,
 					return;
 				rule->src.ip.ip4 = rte_bswap32(
 					(uint32_t)ip.s_addr);
-			} else if (rule->flags == IP6_TUNNEL) {
+			} else if (IS_IP6_TUNNEL(rule->flags)) {
 				struct in6_addr ip;
 
 				APP_CHECK(parse_ipv6_addr(tokens[ti], &ip,
@@ -492,7 +496,7 @@ parse_sa_tokens(char **tokens, uint32_t n_tokens,
 					return;
 				memcpy(rule->src.ip.ip6.ip6_b,
 					ip.s6_addr, 16);
-			} else if (rule->flags == TRANSPORT) {
+			} else if (IS_TRANSPORT(rule->flags)) {
 				APP_CHECK(0, status, "unrecognized input "
 					"\"%s\"", tokens[ti]);
 				return;
@@ -511,7 +515,7 @@ parse_sa_tokens(char **tokens, uint32_t n_tokens,
 			if (status->status < 0)
 				return;
 
-			if (rule->flags == IP4_TUNNEL) {
+			if (IS_IP4_TUNNEL(rule->flags)) {
 				struct in_addr ip;
 
 				APP_CHECK(parse_ipv4_addr(tokens[ti],
@@ -523,7 +527,7 @@ parse_sa_tokens(char **tokens, uint32_t n_tokens,
 					return;
 				rule->dst.ip.ip4 = rte_bswap32(
 					(uint32_t)ip.s_addr);
-			} else if (rule->flags == IP6_TUNNEL) {
+			} else if (IS_IP6_TUNNEL(rule->flags)) {
 				struct in6_addr ip;
 
 				APP_CHECK(parse_ipv6_addr(tokens[ti], &ip,
@@ -534,7 +538,7 @@ parse_sa_tokens(char **tokens, uint32_t n_tokens,
 				if (status->status < 0)
 					return;
 				memcpy(rule->dst.ip.ip6.ip6_b, ip.s6_addr, 16);
-			} else if (rule->flags == TRANSPORT) {
+			} else if (IS_TRANSPORT(rule->flags)) {
 				APP_CHECK(0, status, "unrecognized "
 					"input \"%s\"",	tokens[ti]);
 				return;
@@ -663,7 +667,7 @@ print_one_sa_rule(const struct ipsec_sa *sa, int inbound)
 
 	printf("mode:");
 
-	switch (sa->flags) {
+	switch (WITHOUT_TRANSPORT_VERSION(sa->flags)) {
 	case IP4_TUNNEL:
 		printf("IP4Tunnel ");
 		uint32_t_to_char(sa->src.ip.ip4, &a, &b, &c, &d);
@@ -739,7 +743,7 @@ sa_create(const char *name, int32_t socket_id)
 			RTE_MEMZONE_1GB | RTE_MEMZONE_SIZE_HINT_ONLY);
 	if (mz == NULL) {
 		printf("Failed to allocate SA DB memory\n");
-		rte_errno = -ENOMEM;
+		rte_errno = ENOMEM;
 		return NULL;
 	}
 
@@ -752,8 +756,16 @@ static int
 check_eth_dev_caps(uint16_t portid, uint32_t inbound)
 {
 	struct rte_eth_dev_info dev_info;
+	int retval;
 
-	rte_eth_dev_info_get(portid, &dev_info);
+	retval = rte_eth_dev_info_get(portid, &dev_info);
+	if (retval != 0) {
+		RTE_LOG(ERR, IPSEC,
+			"Error during getting device (port %u) info: %s\n",
+			portid, strerror(-retval));
+
+		return retval;
+	}
 
 	if (inbound) {
 		if ((dev_info.rx_offload_capa &
@@ -774,14 +786,104 @@ check_eth_dev_caps(uint16_t portid, uint32_t inbound)
 	return 0;
 }
 
+/*
+ * Helper function, tries to determine next_proto for SPI
+ * by searching though SP rules.
+ */
+static int
+get_spi_proto(uint32_t spi, enum rte_security_ipsec_sa_direction dir,
+		struct ip_addr ip_addr[2], uint32_t mask[2])
+{
+	int32_t rc4, rc6;
+
+	rc4 = sp4_spi_present(spi, dir == RTE_SECURITY_IPSEC_SA_DIR_INGRESS,
+				ip_addr, mask);
+	rc6 = sp6_spi_present(spi, dir == RTE_SECURITY_IPSEC_SA_DIR_INGRESS,
+				ip_addr, mask);
+
+	if (rc4 >= 0) {
+		if (rc6 >= 0) {
+			RTE_LOG(ERR, IPSEC,
+				"%s: SPI %u used simultaeously by "
+				"IPv4(%d) and IPv6 (%d) SP rules\n",
+				__func__, spi, rc4, rc6);
+			return -EINVAL;
+		} else
+			return IPPROTO_IPIP;
+	} else if (rc6 < 0) {
+		RTE_LOG(ERR, IPSEC,
+			"%s: SPI %u is not used by any SP rule\n",
+			__func__, spi);
+		return -EINVAL;
+	} else
+		return IPPROTO_IPV6;
+}
+
+/*
+ * Helper function for getting source and destination IP addresses
+ * from SP. Needed for inline crypto transport mode, as addresses are not
+ * provided in config file for that mode. It checks if SP for current SA exists,
+ * and based on what type of protocol is returned, it stores appropriate
+ * addresses got from SP into SA.
+ */
+static int
+sa_add_address_inline_crypto(struct ipsec_sa *sa)
+{
+	int protocol;
+	struct ip_addr ip_addr[2];
+	uint32_t mask[2];
+
+	protocol = get_spi_proto(sa->spi, sa->direction, ip_addr, mask);
+	if (protocol < 0)
+		return protocol;
+	else if (protocol == IPPROTO_IPIP) {
+		sa->flags |= IP4_TRANSPORT;
+		if (mask[0] == IP4_FULL_MASK &&
+				mask[1] == IP4_FULL_MASK &&
+				ip_addr[0].ip.ip4 != 0 &&
+				ip_addr[1].ip.ip4 != 0) {
+
+			sa->src.ip.ip4 = ip_addr[0].ip.ip4;
+			sa->dst.ip.ip4 = ip_addr[1].ip.ip4;
+		} else {
+			RTE_LOG(ERR, IPSEC,
+			"%s: No valid address or mask entry in"
+			" IPv4 SP rule for SPI %u\n",
+			__func__, sa->spi);
+			return -EINVAL;
+		}
+	} else if (protocol == IPPROTO_IPV6) {
+		sa->flags |= IP6_TRANSPORT;
+		if (mask[0] == IP6_FULL_MASK &&
+				mask[1] == IP6_FULL_MASK &&
+				(ip_addr[0].ip.ip6.ip6[0] != 0 ||
+				ip_addr[0].ip.ip6.ip6[1] != 0) &&
+				(ip_addr[1].ip.ip6.ip6[0] != 0 ||
+				ip_addr[1].ip.ip6.ip6[1] != 0)) {
+
+			sa->src.ip.ip6 = ip_addr[0].ip.ip6;
+			sa->dst.ip.ip6 = ip_addr[1].ip.ip6;
+		} else {
+			RTE_LOG(ERR, IPSEC,
+			"%s: No valid address or mask entry in"
+			" IPv6 SP rule for SPI %u\n",
+			__func__, sa->spi);
+			return -EINVAL;
+		}
+	}
+	return 0;
+}
 
 static int
 sa_add_rules(struct sa_ctx *sa_ctx, const struct ipsec_sa entries[],
-		uint32_t nb_entries, uint32_t inbound)
+		uint32_t nb_entries, uint32_t inbound,
+		struct socket_ctx *skt_ctx)
 {
 	struct ipsec_sa *sa;
 	uint32_t i, idx;
 	uint16_t iv_length, aad_length;
+	int inline_status;
+	int32_t rc;
 
 	/* for ESN upper 32 bits of SQN also need to be part of AAD */
 	aad_length = (app_sa_prm.enable_esn != 0) ? sizeof(uint32_t) : 0;
@@ -807,10 +909,20 @@ sa_add_rules(struct sa_ctx *sa_ctx, const struct ipsec_sa entries[],
 				RTE_SECURITY_IPSEC_SA_DIR_INGRESS :
 				RTE_SECURITY_IPSEC_SA_DIR_EGRESS;
 
-		switch (sa->flags) {
+		switch (WITHOUT_TRANSPORT_VERSION(sa->flags)) {
 		case IP4_TUNNEL:
 			sa->src.ip.ip4 = rte_cpu_to_be_32(sa->src.ip.ip4);
 			sa->dst.ip.ip4 = rte_cpu_to_be_32(sa->dst.ip.ip4);
+			break;
+		case TRANSPORT:
+			if (sa->type ==
+				RTE_SECURITY_ACTION_TYPE_INLINE_CRYPTO) {
+				inline_status =
+					sa_add_address_inline_crypto(sa);
+				if (inline_status < 0)
+					return inline_status;
+			}
+			break;
 		}
 
 		if (sa->aead_algo == RTE_CRYPTO_AEAD_AES_GCM) {
@@ -834,6 +946,17 @@ sa_add_rules(struct sa_ctx *sa_ctx, const struct ipsec_sa entries[],
 
 			sa->xforms = &sa_ctx->xf[idx].a;
 
+			if (sa->type ==
+				RTE_SECURITY_ACTION_TYPE_INLINE_PROTOCOL ||
+				sa->type ==
+				RTE_SECURITY_ACTION_TYPE_INLINE_CRYPTO) {
+				rc = create_inline_session(skt_ctx, sa);
+				if (rc != 0) {
+					RTE_LOG(ERR, IPSEC_ESP,
+						"create_inline_session() failed\n");
+					return -EINVAL;
+				}
+			}
 			print_one_sa_rule(sa, inbound);
 		} else {
 			switch (sa->cipher_algo) {
@@ -909,16 +1032,16 @@ sa_add_rules(struct sa_ctx *sa_ctx, const struct ipsec_sa entries[],
 
 static inline int
 sa_out_add_rules(struct sa_ctx *sa_ctx, const struct ipsec_sa entries[],
-		uint32_t nb_entries)
+		uint32_t nb_entries, struct socket_ctx *skt_ctx)
 {
-	return sa_add_rules(sa_ctx, entries, nb_entries, 0);
+	return sa_add_rules(sa_ctx, entries, nb_entries, 0, skt_ctx);
 }
 
 static inline int
 sa_in_add_rules(struct sa_ctx *sa_ctx, const struct ipsec_sa entries[],
-		uint32_t nb_entries)
+		uint32_t nb_entries, struct socket_ctx *skt_ctx)
 {
-	return sa_add_rules(sa_ctx, entries, nb_entries, 1);
+	return sa_add_rules(sa_ctx, entries, nb_entries, 1, skt_ctx);
 }
 
 /*
@@ -935,36 +1058,6 @@ fill_ipsec_app_sa_prm(struct rte_ipsec_sa_prm *prm,
 	prm->replay_win_sz = app_prm->window_size;
 }
 
-/*
- * Helper function, tries to determine next_proto for SPI
- * by searching though SP rules.
- */
-static int
-get_spi_proto(uint32_t spi, enum rte_security_ipsec_sa_direction dir)
-{
-	int32_t rc4, rc6;
-
-	rc4 = sp4_spi_present(spi, dir == RTE_SECURITY_IPSEC_SA_DIR_INGRESS);
-	rc6 = sp6_spi_present(spi, dir == RTE_SECURITY_IPSEC_SA_DIR_INGRESS);
-
-	if (rc4 >= 0) {
-		if (rc6 >= 0) {
-			RTE_LOG(ERR, IPSEC,
-				"%s: SPI %u used simultaeously by "
-				"RTE_IPV4(%d) and IPv6 (%d) SP rules\n",
-				__func__, spi, rc4, rc6);
-			return -EINVAL;
-		} else
-			return IPPROTO_IPIP;
-	} else if (rc6 < 0) {
-		RTE_LOG(ERR, IPSEC,
-			"%s: SPI %u is not used by any SP rule\n",
-			__func__, spi);
-		return -EINVAL;
-	} else
-		return IPPROTO_IPV6;
-}
-
 static int
 fill_ipsec_sa_prm(struct rte_ipsec_sa_prm *prm, const struct ipsec_sa *ss,
 	const struct rte_ipv4_hdr *v4, struct rte_ipv6_hdr *v6)
@@ -976,7 +1069,7 @@ fill_ipsec_sa_prm(struct rte_ipsec_sa_prm *prm, const struct ipsec_sa *ss,
 	 * probably not the optimal way, but there seems nothing
 	 * better right now.
 	 */
-	rc = get_spi_proto(ss->spi, ss->direction);
+	rc = get_spi_proto(ss->spi, ss->direction, NULL, NULL);
 	if (rc < 0)
 		return rc;
 
@@ -988,16 +1081,18 @@ fill_ipsec_sa_prm(struct rte_ipsec_sa_prm *prm, const struct ipsec_sa *ss,
 	prm->ipsec_xform.salt = ss->salt;
 	prm->ipsec_xform.direction = ss->direction;
 	prm->ipsec_xform.proto = RTE_SECURITY_IPSEC_SA_PROTO_ESP;
-	prm->ipsec_xform.mode = (ss->flags == TRANSPORT) ?
+	prm->ipsec_xform.mode = (IS_TRANSPORT(ss->flags)) ?
 		RTE_SECURITY_IPSEC_SA_MODE_TRANSPORT :
 		RTE_SECURITY_IPSEC_SA_MODE_TUNNEL;
+	prm->ipsec_xform.options.ecn = 1;
+	prm->ipsec_xform.options.copy_dscp = 1;
 
-	if (ss->flags == IP4_TUNNEL) {
+	if (IS_IP4_TUNNEL(ss->flags)) {
 		prm->ipsec_xform.tunnel.type = RTE_SECURITY_IPSEC_TUNNEL_IPV4;
 		prm->tun.hdr_len = sizeof(*v4);
 		prm->tun.next_proto = rc;
 		prm->tun.hdr = v4;
-	} else if (ss->flags == IP6_TUNNEL) {
+	} else if (IS_IP6_TUNNEL(ss->flags)) {
 		prm->ipsec_xform.tunnel.type = RTE_SECURITY_IPSEC_TUNNEL_IPV6;
 		prm->tun.hdr_len = sizeof(*v6);
 		prm->tun.next_proto = rc;
@@ -1012,10 +1107,12 @@ fill_ipsec_sa_prm(struct rte_ipsec_sa_prm *prm, const struct ipsec_sa *ss,
 	return 0;
 }
 
-static void
+static int
 fill_ipsec_session(struct rte_ipsec_session *ss, struct rte_ipsec_sa *sa,
 	const struct ipsec_sa *lsa)
 {
+	int32_t rc = 0;
+
 	ss->sa = sa;
 	ss->type = lsa->type;
 
@@ -1028,6 +1125,17 @@ fill_ipsec_session(struct rte_ipsec_session *ss, struct rte_ipsec_sa *sa,
 		ss->security.ctx = lsa->security_ctx;
 		ss->security.ol_flags = lsa->ol_flags;
 	}
+
+	if (ss->type == RTE_SECURITY_ACTION_TYPE_INLINE_CRYPTO ||
+		ss->type == RTE_SECURITY_ACTION_TYPE_INLINE_PROTOCOL) {
+		if (ss->security.ses != NULL) {
+			rc = rte_ipsec_session_prepare(ss);
+			if (rc != 0)
+				memset(ss, 0, sizeof(*ss));
+		}
+	}
+
+	return rc;
 }
 
 /*
@@ -1051,7 +1159,7 @@ ipsec_sa_init(struct ipsec_sa *lsa, struct rte_ipsec_sa *sa, uint32_t sa_size)
 		.proto = IPPROTO_ESP,
 	};
 
-	if (lsa->flags == IP6_TUNNEL) {
+	if (IS_IP6_TUNNEL(lsa->flags)) {
 		memcpy(v6.src_addr, lsa->src.ip.ip6.ip6_b, sizeof(v6.src_addr));
 		memcpy(v6.dst_addr, lsa->dst.ip.ip6.ip6_b, sizeof(v6.dst_addr));
 	}
@@ -1062,8 +1170,8 @@ ipsec_sa_init(struct ipsec_sa *lsa, struct rte_ipsec_sa *sa, uint32_t sa_size)
 	if (rc < 0)
 		return rc;
 
-	fill_ipsec_session(&lsa->ips, sa, lsa);
-	return 0;
+	rc = fill_ipsec_session(&lsa->ips, sa, lsa);
+	return rc;
 }
 
 /*
@@ -1166,7 +1274,7 @@ sa_init(struct socket_ctx *ctx, int32_t socket_id)
 				"context %s in socket %d\n", rte_errno,
 				name, socket_id);
 
-		sa_in_add_rules(ctx->sa_in, sa_in, nb_sa_in);
+		sa_in_add_rules(ctx->sa_in, sa_in, nb_sa_in, ctx);
 
 		if (app_sa_prm.enable != 0) {
 			rc = ipsec_satbl_init(ctx->sa_in, sa_in, nb_sa_in,
@@ -1186,7 +1294,7 @@ sa_init(struct socket_ctx *ctx, int32_t socket_id)
 				"context %s in socket %d\n", rte_errno,
 				name, socket_id);
 
-		sa_out_add_rules(ctx->sa_out, sa_out, nb_sa_out);
+		sa_out_add_rules(ctx->sa_out, sa_out, nb_sa_out, ctx);
 
 		if (app_sa_prm.enable != 0) {
 			rc = ipsec_satbl_init(ctx->sa_out, sa_out, nb_sa_out,
@@ -1228,10 +1336,7 @@ single_inbound_lookup(struct ipsec_sa *sadb, struct rte_mbuf *pkt,
 	*sa_ret = NULL;
 
 	ip = rte_pktmbuf_mtod(pkt, struct ip *);
-	if (ip->ip_v == IPVERSION)
-		esp = (struct rte_esp_hdr *)(ip + 1);
-	else
-		esp = (struct rte_esp_hdr *)(((struct ip6_hdr *)ip) + 1);
+	esp = rte_pktmbuf_mtod_offset(pkt, struct rte_esp_hdr *, pkt->l3_len);
 
 	if (esp->spi == INVALID_SPI)
 		return;
@@ -1240,7 +1345,7 @@ single_inbound_lookup(struct ipsec_sa *sadb, struct rte_mbuf *pkt,
 	if (rte_be_to_cpu_32(esp->spi) != sa->spi)
 		return;
 
-	switch (sa->flags) {
+	switch (WITHOUT_TRANSPORT_VERSION(sa->flags)) {
 	case IP4_TUNNEL:
 		src4_addr = RTE_PTR_ADD(ip, offsetof(struct ip, ip_src));
 		if ((ip->ip_v == IPVERSION) &&

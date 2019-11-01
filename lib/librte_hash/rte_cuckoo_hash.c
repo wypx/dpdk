@@ -27,6 +27,7 @@
 #include <rte_ring.h>
 #include <rte_compat.h>
 #include <rte_vect.h>
+#include <rte_tailq.h>
 
 #include "rte_hash.h"
 #include "rte_cuckoo_hash.h"
@@ -52,13 +53,13 @@ rte_hash_find_existing(const char *name)
 
 	hash_list = RTE_TAILQ_CAST(rte_hash_tailq.head, rte_hash_list);
 
-	rte_rwlock_read_lock(RTE_EAL_TAILQ_RWLOCK);
+	rte_mcfg_tailq_read_lock();
 	TAILQ_FOREACH(te, hash_list, next) {
 		h = (struct rte_hash *) te->data;
 		if (strncmp(name, h->name, RTE_HASH_NAMESIZE) == 0)
 			break;
 	}
-	rte_rwlock_read_unlock(RTE_EAL_TAILQ_RWLOCK);
+	rte_mcfg_tailq_read_unlock();
 
 	if (te == NULL) {
 		rte_errno = ENOENT;
@@ -239,7 +240,7 @@ rte_hash_create(const struct rte_hash_parameters *params)
 
 	snprintf(hash_name, sizeof(hash_name), "HT_%s", params->name);
 
-	rte_rwlock_write_lock(RTE_EAL_TAILQ_RWLOCK);
+	rte_mcfg_tailq_write_lock();
 
 	/* guarantee there's no existing: this is normally already checked
 	 * by ring creation above */
@@ -437,11 +438,11 @@ rte_hash_create(const struct rte_hash_parameters *params)
 
 	te->data = (void *) h;
 	TAILQ_INSERT_TAIL(hash_list, te, next);
-	rte_rwlock_write_unlock(RTE_EAL_TAILQ_RWLOCK);
+	rte_mcfg_tailq_write_unlock();
 
 	return h;
 err_unlock:
-	rte_rwlock_write_unlock(RTE_EAL_TAILQ_RWLOCK);
+	rte_mcfg_tailq_write_unlock();
 err:
 	rte_ring_free(r);
 	rte_ring_free(r_ext);
@@ -466,7 +467,7 @@ rte_hash_free(struct rte_hash *h)
 
 	hash_list = RTE_TAILQ_CAST(rte_hash_tailq.head, rte_hash_list);
 
-	rte_rwlock_write_lock(RTE_EAL_TAILQ_RWLOCK);
+	rte_mcfg_tailq_write_lock();
 
 	/* find out tailq entry */
 	TAILQ_FOREACH(te, hash_list, next) {
@@ -475,13 +476,13 @@ rte_hash_free(struct rte_hash *h)
 	}
 
 	if (te == NULL) {
-		rte_rwlock_write_unlock(RTE_EAL_TAILQ_RWLOCK);
+		rte_mcfg_tailq_write_unlock();
 		return;
 	}
 
 	TAILQ_REMOVE(hash_list, te, next);
 
-	rte_rwlock_write_unlock(RTE_EAL_TAILQ_RWLOCK);
+	rte_mcfg_tailq_write_unlock();
 
 	if (h->use_local_cache)
 		rte_free(h->local_free_slots);
@@ -569,7 +570,6 @@ __hash_rw_reader_unlock(const struct rte_hash *h)
 void
 rte_hash_reset(struct rte_hash *h)
 {
-	void *ptr;
 	uint32_t tot_ring_cnt, i;
 
 	if (h == NULL)
@@ -580,16 +580,14 @@ rte_hash_reset(struct rte_hash *h)
 	memset(h->key_store, 0, h->key_entry_size * (h->entries + 1));
 	*h->tbl_chng_cnt = 0;
 
-	/* clear the free ring */
-	while (rte_ring_dequeue(h->free_slots, &ptr) == 0)
-		continue;
+	/* reset the free ring */
+	rte_ring_reset(h->free_slots);
 
-	/* clear free extendable bucket ring and memory */
+	/* flush free extendable bucket ring and memory */
 	if (h->ext_table_support) {
 		memset(h->buckets_ext, 0, h->num_buckets *
 						sizeof(struct rte_hash_bucket));
-		while (rte_ring_dequeue(h->free_ext_bkts, &ptr) == 0)
-			continue;
+		rte_ring_reset(h->free_ext_bkts);
 	}
 
 	/* Repopulate the free slots ring. Entry zero is reserved for key misses */
@@ -649,9 +647,11 @@ search_and_update(const struct rte_hash *h, void *data, const void *key,
 			k = (struct rte_hash_key *) ((char *)keys +
 					bkt->key_idx[i] * h->key_entry_size);
 			if (rte_hash_cmp_eq(key, k->key, h) == 0) {
-				/* 'pdata' acts as the synchronization point
-				 * when an existing hash entry is updated.
-				 * Key is not updated in this case.
+				/* The store to application data at *data
+				 * should not leak after the store to pdata
+				 * in the key store. i.e. pdata is the guard
+				 * variable. Release the application data
+				 * to the readers.
 				 */
 				__atomic_store_n(&k->pdata,
 					data,
@@ -711,11 +711,10 @@ rte_hash_cuckoo_insert_mw(const struct rte_hash *h,
 		/* Check if slot is available */
 		if (likely(prim_bkt->key_idx[i] == EMPTY_SLOT)) {
 			prim_bkt->sig_current[i] = sig;
-			/* Key can be of arbitrary length, so it is
-			 * not possible to store it atomically.
-			 * Hence the new key element's memory stores
-			 * (key as well as data) should be complete
-			 * before it is referenced.
+			/* Store to signature and key should not
+			 * leak after the store to key_idx. i.e.
+			 * key_idx is the guard variable for signature
+			 * and key.
 			 */
 			__atomic_store_n(&prim_bkt->key_idx[i],
 					 new_idx,
@@ -990,17 +989,15 @@ __rte_hash_add_key_with_hash(const struct rte_hash *h, const void *key,
 
 	new_k = RTE_PTR_ADD(keys, (uintptr_t)slot_id * h->key_entry_size);
 	new_idx = (uint32_t)((uintptr_t) slot_id);
-	/* Copy key */
-	memcpy(new_k->key, key, h->key_len);
-	/* Key can be of arbitrary length, so it is not possible to store
-	 * it atomically. Hence the new key element's memory stores
-	 * (key as well as data) should be complete before it is referenced.
-	 * 'pdata' acts as the synchronization point when an existing hash
-	 * entry is updated.
+	/* The store to application data (by the application) at *data should
+	 * not leak after the store of pdata in the key store. i.e. pdata is
+	 * the guard variable. Release the application data to the readers.
 	 */
 	__atomic_store_n(&new_k->pdata,
 		data,
 		__ATOMIC_RELEASE);
+	/* Copy key */
+	memcpy(new_k->key, key, h->key_len);
 
 	/* Find an empty slot and insert */
 	ret = rte_hash_cuckoo_insert_mw(h, prim_bkt, sec_bkt, key, data,
@@ -1064,8 +1061,10 @@ __rte_hash_add_key_with_hash(const struct rte_hash *h, const void *key,
 			/* Check if slot is available */
 			if (likely(cur_bkt->key_idx[i] == EMPTY_SLOT)) {
 				cur_bkt->sig_current[i] = short_sig;
-				/* Store to signature should not leak after
-				 * the store to key_idx
+				/* Store to signature and key should not
+				 * leak after the store to key_idx. i.e.
+				 * key_idx is the guard variable for signature
+				 * and key.
 				 */
 				__atomic_store_n(&cur_bkt->key_idx[i],
 						 new_idx,
@@ -1087,8 +1086,9 @@ __rte_hash_add_key_with_hash(const struct rte_hash *h, const void *key,
 	bkt_id = (uint32_t)((uintptr_t)ext_bkt_id) - 1;
 	/* Use the first location of the new bucket */
 	(h->buckets_ext[bkt_id]).sig_current[0] = short_sig;
-	/* Store to signature should not leak after
-	 * the store to key_idx
+	/* Store to signature and key should not leak after
+	 * the store to key_idx. i.e. key_idx is the guard variable
+	 * for signature and key.
 	 */
 	__atomic_store_n(&(h->buckets_ext[bkt_id]).key_idx[0],
 			 new_idx,
@@ -1184,26 +1184,35 @@ search_one_bucket_lf(const struct rte_hash *h, const void *key, uint16_t sig,
 {
 	int i;
 	uint32_t key_idx;
-	void *pdata;
 	struct rte_hash_key *k, *keys = h->key_store;
 
 	for (i = 0; i < RTE_HASH_BUCKET_ENTRIES; i++) {
-		key_idx = __atomic_load_n(&bkt->key_idx[i],
+		/* Signature comparison is done before the acquire-load
+		 * of the key index to achieve better performance.
+		 * This can result in the reader loading old signature
+		 * (which matches), while the key_idx is updated to a
+		 * value that belongs to a new key. However, the full
+		 * key comparison will ensure that the lookup fails.
+		 */
+		if (bkt->sig_current[i] == sig) {
+			key_idx = __atomic_load_n(&bkt->key_idx[i],
 					  __ATOMIC_ACQUIRE);
-		if (bkt->sig_current[i] == sig && key_idx != EMPTY_SLOT) {
-			k = (struct rte_hash_key *) ((char *)keys +
-					key_idx * h->key_entry_size);
-			pdata = __atomic_load_n(&k->pdata,
-					__ATOMIC_ACQUIRE);
+			if (key_idx != EMPTY_SLOT) {
+				k = (struct rte_hash_key *) ((char *)keys +
+						key_idx * h->key_entry_size);
 
-			if (rte_hash_cmp_eq(key, k->key, h) == 0) {
-				if (data != NULL)
-					*data = pdata;
-				/*
-				 * Return index where key is stored,
-				 * subtracting the first dummy index
-				 */
-				return key_idx - 1;
+				if (rte_hash_cmp_eq(key, k->key, h) == 0) {
+					if (data != NULL) {
+						*data = __atomic_load_n(
+							&k->pdata,
+							__ATOMIC_ACQUIRE);
+					}
+					/*
+					 * Return index where key is stored,
+					 * subtracting the first dummy index
+					 */
+					return key_idx - 1;
+				}
 			}
 		}
 	}
@@ -1583,7 +1592,7 @@ rte_hash_get_key_with_position(const struct rte_hash *h, const int32_t position,
 	return 0;
 }
 
-int __rte_experimental
+int
 rte_hash_free_key_with_position(const struct rte_hash *h,
 				const int32_t position)
 {
@@ -1895,7 +1904,6 @@ __rte_hash_lookup_bulk_lf(const struct rte_hash *h, const void **keys,
 	uint32_t prim_hitmask[RTE_HASH_LOOKUP_BULK_MAX] = {0};
 	uint32_t sec_hitmask[RTE_HASH_LOOKUP_BULK_MAX] = {0};
 	struct rte_hash_bucket *cur_bkt, *next_bkt;
-	void *pdata[RTE_HASH_LOOKUP_BULK_MAX];
 	uint32_t cnt_b, cnt_a;
 
 	/* Prefetch first keys */
@@ -1997,10 +2005,6 @@ __rte_hash_lookup_bulk_lf(const struct rte_hash *h, const void **keys,
 					(const char *)h->key_store +
 					key_idx * h->key_entry_size);
 
-				if (key_idx != EMPTY_SLOT)
-					pdata[i] = __atomic_load_n(
-							&key_slot->pdata,
-							__ATOMIC_ACQUIRE);
 				/*
 				 * If key index is 0, do not compare key,
 				 * as it is checking the dummy slot
@@ -2009,7 +2013,9 @@ __rte_hash_lookup_bulk_lf(const struct rte_hash *h, const void **keys,
 					!rte_hash_cmp_eq(
 						key_slot->key, keys[i], h)) {
 					if (data != NULL)
-						data[i] = pdata[i];
+						data[i] = __atomic_load_n(
+							&key_slot->pdata,
+							__ATOMIC_ACQUIRE);
 
 					hits |= 1ULL << i;
 					positions[i] = key_idx - 1;
@@ -2031,10 +2037,6 @@ __rte_hash_lookup_bulk_lf(const struct rte_hash *h, const void **keys,
 					(const char *)h->key_store +
 					key_idx * h->key_entry_size);
 
-				if (key_idx != EMPTY_SLOT)
-					pdata[i] = __atomic_load_n(
-							&key_slot->pdata,
-							__ATOMIC_ACQUIRE);
 				/*
 				 * If key index is 0, do not compare key,
 				 * as it is checking the dummy slot
@@ -2044,7 +2046,9 @@ __rte_hash_lookup_bulk_lf(const struct rte_hash *h, const void **keys,
 					!rte_hash_cmp_eq(
 						key_slot->key, keys[i], h)) {
 					if (data != NULL)
-						data[i] = pdata[i];
+						data[i] = __atomic_load_n(
+							&key_slot->pdata,
+							__ATOMIC_ACQUIRE);
 
 					hits |= 1ULL << i;
 					positions[i] = key_idx - 1;

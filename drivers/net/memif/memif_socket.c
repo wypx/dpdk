@@ -7,7 +7,6 @@
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/socket.h>
-#include <sys/un.h>
 #include <sys/ioctl.h>
 #include <errno.h>
 
@@ -256,6 +255,7 @@ memif_msg_receive_add_region(struct rte_eth_dev *dev, memif_msg_t *msg,
 			     int fd)
 {
 	struct pmd_internals *pmd = dev->data->dev_private;
+	struct pmd_process_private *proc_private = dev->process_private;
 	memif_msg_add_region_t *ar = &msg->add_region;
 	struct memif_region *r;
 
@@ -264,16 +264,16 @@ memif_msg_receive_add_region(struct rte_eth_dev *dev, memif_msg_t *msg,
 		return -1;
 	}
 
-	if (ar->index >= ETH_MEMIF_MAX_REGION_NUM || ar->index != pmd->regions_num ||
-			pmd->regions[ar->index] != NULL) {
+	if (ar->index >= ETH_MEMIF_MAX_REGION_NUM ||
+			ar->index != proc_private->regions_num ||
+			proc_private->regions[ar->index] != NULL) {
 		memif_msg_enq_disconnect(pmd->cc, "Invalid region index", 0);
 		return -1;
 	}
 
 	r = rte_zmalloc("region", sizeof(struct memif_region), 0);
 	if (r == NULL) {
-		MIF_LOG(ERR, "%s: Failed to alloc memif region.",
-			rte_vdev_device_name(pmd->vdev));
+		memif_msg_enq_disconnect(pmd->cc, "Failed to alloc memif region.", 0);
 		return -ENOMEM;
 	}
 
@@ -281,8 +281,8 @@ memif_msg_receive_add_region(struct rte_eth_dev *dev, memif_msg_t *msg,
 	r->region_size = ar->size;
 	r->addr = NULL;
 
-	pmd->regions[ar->index] = r;
-	pmd->regions_num++;
+	proc_private->regions[ar->index] = r;
+	proc_private->regions_num++;
 
 	return 0;
 }
@@ -377,8 +377,7 @@ memif_msg_receive_disconnect(struct rte_eth_dev *dev, memif_msg_t *msg)
 		rte_vdev_device_name(pmd->vdev), pmd->remote_disc_string);
 
 	memset(pmd->local_disc_string, 0, ETH_MEMIF_DISC_STRING_SIZE);
-	memif_disconnect(rte_eth_dev_allocated
-			 (rte_vdev_device_name(pmd->vdev)));
+	memif_disconnect(dev);
 	return 0;
 }
 
@@ -423,9 +422,10 @@ static int
 memif_msg_enq_add_region(struct rte_eth_dev *dev, uint8_t idx)
 {
 	struct pmd_internals *pmd = dev->data->dev_private;
+	struct pmd_process_private *proc_private = dev->process_private;
 	struct memif_msg_queue_elt *e = memif_msg_enq(pmd->cc);
 	memif_msg_add_region_t *ar;
-	struct memif_region *mr = pmd->regions[idx];
+	struct memif_region *mr = proc_private->regions[idx];
 
 	if (e == NULL)
 		return -1;
@@ -524,11 +524,16 @@ void
 memif_disconnect(struct rte_eth_dev *dev)
 {
 	struct pmd_internals *pmd = dev->data->dev_private;
+	struct pmd_process_private *proc_private = dev->process_private;
 	struct memif_msg_queue_elt *elt, *next;
 	struct memif_queue *mq;
 	struct rte_intr_handle *ih;
 	int i;
 	int ret;
+
+	dev->data->dev_link.link_status = ETH_LINK_DOWN;
+	pmd->flags &= ~ETH_MEMIF_FLAG_CONNECTING;
+	pmd->flags &= ~ETH_MEMIF_FLAG_CONNECTED;
 
 	if (pmd->cc != NULL) {
 		/* Clear control message queue (except disconnect message if any). */
@@ -545,8 +550,7 @@ memif_disconnect(struct rte_eth_dev *dev)
 		/* at this point, there should be no more messages in queue */
 		if (TAILQ_FIRST(&pmd->cc->msg_queue) != NULL) {
 			MIF_LOG(WARNING,
-				"%s: Unexpected message(s) in message queue.",
-				rte_vdev_device_name(pmd->vdev));
+				"Unexpected message(s) in message queue.");
 		}
 
 		ih = &pmd->cc->intr_handle;
@@ -569,9 +573,8 @@ memif_disconnect(struct rte_eth_dev *dev)
 			}
 			pmd->cc = NULL;
 			if (ret <= 0)
-				MIF_LOG(WARNING, "%s: Failed to unregister "
-					"control channel callback.",
-					rte_vdev_device_name(pmd->vdev));
+				MIF_LOG(WARNING,
+					"Failed to unregister control channel callback.");
 		}
 	}
 
@@ -592,7 +595,6 @@ memif_disconnect(struct rte_eth_dev *dev)
 			close(mq->intr_handle.fd);
 			mq->intr_handle.fd = -1;
 		}
-		mq->ring = NULL;
 	}
 	for (i = 0; i < pmd->cfg.num_m2s_rings; i++) {
 		if (pmd->role == MEMIF_ROLE_MASTER) {
@@ -610,18 +612,14 @@ memif_disconnect(struct rte_eth_dev *dev)
 			close(mq->intr_handle.fd);
 			mq->intr_handle.fd = -1;
 		}
-		mq->ring = NULL;
 	}
 
-	memif_free_regions(pmd);
+	memif_free_regions(proc_private);
 
 	/* reset connection configuration */
 	memset(&pmd->run, 0, sizeof(pmd->run));
 
-	dev->data->dev_link.link_status = ETH_LINK_DOWN;
-	pmd->flags &= ~ETH_MEMIF_FLAG_CONNECTING;
-	pmd->flags &= ~ETH_MEMIF_FLAG_CONNECTED;
-	MIF_LOG(DEBUG, "%s: Disconnected.", rte_vdev_device_name(pmd->vdev));
+	MIF_LOG(DEBUG, "Disconnected.");
 }
 
 static int
@@ -640,6 +638,7 @@ memif_msg_receive(struct memif_control_channel *cc)
 	int afd = -1;
 	int i;
 	struct pmd_internals *pmd;
+	struct pmd_process_private *proc_private;
 
 	iov[0].iov_base = (void *)&msg;
 	iov[0].iov_len = sizeof(memif_msg_t);
@@ -688,7 +687,8 @@ memif_msg_receive(struct memif_control_channel *cc)
 		if (ret < 0)
 			goto exit;
 		pmd = cc->dev->data->dev_private;
-		for (i = 0; i < pmd->regions_num; i++) {
+		proc_private = cc->dev->process_private;
+		for (i = 0; i < proc_private->regions_num; i++) {
 			ret = memif_msg_enq_add_region(cc->dev, i);
 			if (ret < 0)
 				goto exit;
@@ -851,7 +851,7 @@ memif_listener_handler(void *arg)
 	return;
 
  error:
-	if (sockfd > 0) {
+	if (sockfd >= 0) {
 		close(sockfd);
 		sockfd = -1;
 	}
@@ -860,7 +860,8 @@ memif_listener_handler(void *arg)
 }
 
 static struct memif_socket *
-memif_socket_create(struct pmd_internals *pmd, char *key, uint8_t listener)
+memif_socket_create(struct pmd_internals *pmd,
+		    const char *key, uint8_t listener)
 {
 	struct memif_socket *sock;
 	struct sockaddr_un un;
@@ -875,7 +876,7 @@ memif_socket_create(struct pmd_internals *pmd, char *key, uint8_t listener)
 	}
 
 	sock->listener = listener;
-	rte_memcpy(sock->filename, key, 256);
+	strlcpy(sock->filename, key, MEMIF_SOCKET_UN_SIZE);
 	TAILQ_INIT(&sock->dev_queue);
 
 	if (listener != 0) {
@@ -884,16 +885,17 @@ memif_socket_create(struct pmd_internals *pmd, char *key, uint8_t listener)
 			goto error;
 
 		un.sun_family = AF_UNIX;
-		memcpy(un.sun_path, sock->filename,
-			sizeof(un.sun_path) - 1);
+		strlcpy(un.sun_path, sock->filename, MEMIF_SOCKET_UN_SIZE);
 
 		ret = setsockopt(sockfd, SOL_SOCKET, SO_PASSCRED, &on,
 				 sizeof(on));
 		if (ret < 0)
 			goto error;
+
 		ret = bind(sockfd, (struct sockaddr *)&un, sizeof(un));
 		if (ret < 0)
 			goto error;
+
 		ret = listen(sockfd, 1);
 		if (ret < 0)
 			goto error;
@@ -917,9 +919,12 @@ memif_socket_create(struct pmd_internals *pmd, char *key, uint8_t listener)
 
  error:
 	MIF_LOG(ERR, "%s: Failed to setup socket %s: %s",
-		rte_vdev_device_name(pmd->vdev), key, strerror(errno));
+		rte_vdev_device_name(pmd->vdev) ?
+		rte_vdev_device_name(pmd->vdev) : "NULL", key, strerror(errno));
 	if (sock != NULL)
 		rte_free(sock);
+	if (sockfd >= 0)
+		close(sockfd);
 	return NULL;
 }
 
@@ -927,9 +932,10 @@ static struct rte_hash *
 memif_create_socket_hash(void)
 {
 	struct rte_hash_parameters params = { 0 };
+
 	params.name = MEMIF_SOCKET_HASH_NAME;
 	params.entries = 256;
-	params.key_len = 256;
+	params.key_len = MEMIF_SOCKET_UN_SIZE;
 	params.hash_func = rte_jhash;
 	params.hash_func_init_val = 0;
 	return rte_hash_create(&params);
@@ -944,7 +950,7 @@ memif_socket_init(struct rte_eth_dev *dev, const char *socket_filename)
 	struct pmd_internals *tmp_pmd;
 	struct rte_hash *hash;
 	int ret;
-	char key[256];
+	char key[MEMIF_SOCKET_UN_SIZE];
 
 	hash = rte_hash_find_existing(MEMIF_SOCKET_HASH_NAME);
 	if (hash == NULL) {
@@ -955,8 +961,8 @@ memif_socket_init(struct rte_eth_dev *dev, const char *socket_filename)
 		}
 	}
 
-	memset(key, 0, 256);
-	rte_memcpy(key, socket_filename, strlen(socket_filename));
+	memset(key, 0, MEMIF_SOCKET_UN_SIZE);
+	strlcpy(key, socket_filename, MEMIF_SOCKET_UN_SIZE);
 	ret = rte_hash_lookup_data(hash, key, (void **)&socket);
 	if (ret < 0) {
 		socket = memif_socket_create(pmd, key,
@@ -1009,6 +1015,7 @@ memif_socket_remove_device(struct rte_eth_dev *dev)
 	struct memif_socket *socket = NULL;
 	struct memif_socket_dev_list_elt *elt, *next;
 	struct rte_hash *hash;
+	int ret;
 
 	hash = rte_hash_find_existing(MEMIF_SOCKET_HASH_NAME);
 	if (hash == NULL)
@@ -1036,7 +1043,10 @@ memif_socket_remove_device(struct rte_eth_dev *dev)
 			/* remove listener socket file,
 			 * so we can create new one later.
 			 */
-			remove(socket->filename);
+			ret = remove(socket->filename);
+			if (ret < 0)
+				MIF_LOG(ERR, "Failed to remove socket file: %s",
+					socket->filename);
 		}
 		rte_free(socket);
 	}
@@ -1112,7 +1122,7 @@ memif_connect_slave(struct rte_eth_dev *dev)
 	return 0;
 
  error:
-	if (sockfd > 0) {
+	if (sockfd >= 0) {
 		close(sockfd);
 		sockfd = -1;
 	}

@@ -15,15 +15,12 @@
 #include <fsl_usd.h>
 #include <fsl_qman.h>
 #include <fsl_bman.h>
-#include <of.h>
+#include <dpaa_of.h>
 #include <netcfg.h>
 
+#define MAX_DPAA_CORES			4
 #define DPAA_MBUF_HW_ANNOTATION		64
 #define DPAA_FD_PTA_SIZE		64
-
-#if (DPAA_MBUF_HW_ANNOTATION + DPAA_FD_PTA_SIZE) > RTE_PKTMBUF_HEADROOM
-#error "Annotation requirement is more than RTE_PKTMBUF_HEADROOM"
-#endif
 
 /* mbuf->seqn will be used to store event entry index for
  * driver specific usage. For parallel mode queues, invalid

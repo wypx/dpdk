@@ -35,7 +35,6 @@
 
 #include <rte_common.h>
 #include <rte_log.h>
-#include <rte_eal_memconfig.h>
 #include <rte_eal.h>
 #include <rte_errno.h>
 #include <rte_memory.h>
@@ -44,6 +43,7 @@
 #include "eal_filesystem.h"
 #include "eal_internal_cfg.h"
 #include "eal_memalloc.h"
+#include "eal_memcfg.h"
 #include "eal_private.h"
 
 const int anonymous_hugepages_supported =

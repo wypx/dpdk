@@ -13,7 +13,7 @@
 #include <openssl/hmac.h>
 #include <openssl/evp.h>
 
-#include "rte_openssl_pmd_private.h"
+#include "openssl_pmd_private.h"
 #include "compat.h"
 
 #define DES_BLOCK_SIZE 8
@@ -92,14 +92,14 @@ openssl_get_chain_order(const struct rte_crypto_sym_xform *xform)
 
 /** Get session cipher key from input cipher key */
 static void
-get_cipher_key(uint8_t *input_key, int keylen, uint8_t *session_key)
+get_cipher_key(const uint8_t *input_key, int keylen, uint8_t *session_key)
 {
 	memcpy(session_key, input_key, keylen);
 }
 
 /** Get key ede 24 bytes standard from input key */
 static int
-get_cipher_key_ede(uint8_t *key, int keylen, uint8_t *key_ede)
+get_cipher_key_ede(const uint8_t *key, int keylen, uint8_t *key_ede)
 {
 	int res = 0;
 
@@ -292,7 +292,7 @@ get_aead_algo(enum rte_crypto_aead_algorithm sess_algo, size_t keylen,
 static int
 openssl_set_sess_aead_enc_param(struct openssl_session *sess,
 		enum rte_crypto_aead_algorithm algo,
-		uint8_t tag_len, uint8_t *key)
+		uint8_t tag_len, const uint8_t *key)
 {
 	int iv_type = 0;
 	unsigned int do_ccm;
@@ -352,7 +352,7 @@ openssl_set_sess_aead_enc_param(struct openssl_session *sess,
 static int
 openssl_set_sess_aead_dec_param(struct openssl_session *sess,
 		enum rte_crypto_aead_algorithm algo,
-		uint8_t tag_len, uint8_t *key)
+		uint8_t tag_len, const uint8_t *key)
 {
 	int iv_type = 0;
 	unsigned int do_ccm = 0;
@@ -1529,7 +1529,7 @@ process_openssl_auth_op(struct openssl_qp *qp, struct rte_crypto_op *op,
 	}
 
 	if (sess->auth.operation == RTE_CRYPTO_AUTH_OP_VERIFY) {
-		if (memcmp(dst, op->sym->auth.digest.data,
+		if (CRYPTO_memcmp(dst, op->sym->auth.digest.data,
 				sess->auth.digest_length) != 0) {
 			op->status = RTE_CRYPTO_OP_STATUS_AUTH_FAILED;
 		}
@@ -1848,9 +1848,7 @@ process_openssl_rsa_op(struct rte_crypto_op *cop,
 	cop->status = RTE_CRYPTO_OP_STATUS_SUCCESS;
 
 	switch (pad) {
-	case RTE_CRYPTO_RSA_PKCS1_V1_5_BT0:
-	case RTE_CRYPTO_RSA_PKCS1_V1_5_BT1:
-	case RTE_CRYPTO_RSA_PKCS1_V1_5_BT2:
+	case RTE_CRYPTO_RSA_PADDING_PKCS1_5:
 		pad = RSA_PKCS1_PADDING;
 		break;
 	case RTE_CRYPTO_RSA_PADDING_NONE:
@@ -1867,19 +1865,19 @@ process_openssl_rsa_op(struct rte_crypto_op *cop,
 	case RTE_CRYPTO_ASYM_OP_ENCRYPT:
 		ret = RSA_public_encrypt(op->rsa.message.length,
 				op->rsa.message.data,
-				op->rsa.message.data,
+				op->rsa.cipher.data,
 				rsa,
 				pad);
 
 		if (ret > 0)
-			op->rsa.message.length = ret;
+			op->rsa.cipher.length = ret;
 		OPENSSL_LOG(DEBUG,
 				"length of encrypted text %d\n", ret);
 		break;
 
 	case RTE_CRYPTO_ASYM_OP_DECRYPT:
-		ret = RSA_private_decrypt(op->rsa.message.length,
-				op->rsa.message.data,
+		ret = RSA_private_decrypt(op->rsa.cipher.length,
+				op->rsa.cipher.data,
 				op->rsa.message.data,
 				rsa,
 				pad);
@@ -1914,7 +1912,7 @@ process_openssl_rsa_op(struct rte_crypto_op *cop,
 				"Length of public_decrypt %d "
 				"length of message %zd\n",
 				ret, op->rsa.message.length);
-		if ((ret <= 0) || (memcmp(tmp, op->rsa.message.data,
+		if ((ret <= 0) || (CRYPTO_memcmp(tmp, op->rsa.message.data,
 				op->rsa.message.length))) {
 			OPENSSL_LOG(ERR, "RSA sign Verification failed");
 			cop->status = RTE_CRYPTO_OP_STATUS_ERROR;
@@ -2129,7 +2127,6 @@ cryptodev_openssl_create(const char *name,
 			RTE_CRYPTODEV_FF_RSA_PRIV_OP_KEY_EXP |
 			RTE_CRYPTODEV_FF_RSA_PRIV_OP_KEY_QT;
 
-	/* Set vector instructions mode supported */
 	internals = dev->data->dev_private;
 
 	internals->max_nb_qpairs = init_params->max_nb_queue_pairs;

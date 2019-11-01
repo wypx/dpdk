@@ -22,47 +22,18 @@ extern "C" {
 
 #define LCORE_ID_ANY     UINT32_MAX       /**< Any lcore. */
 
-#if defined(__linux__)
-typedef	cpu_set_t rte_cpuset_t;
-#define RTE_CPU_AND(dst, src1, src2) CPU_AND(dst, src1, src2)
-#elif defined(__FreeBSD__)
-#include <pthread_np.h>
-typedef cpuset_t rte_cpuset_t;
-#define RTE_CPU_AND(dst, src1, src2) do \
-{ \
-	cpuset_t tmp; \
-	CPU_COPY(src1, &tmp); \
-	CPU_AND(&tmp, src2); \
-	CPU_COPY(&tmp, dst); \
-} while (0)
-#endif
-
-/**
- * Structure storing internal configuration (per-lcore)
- */
-struct lcore_config {
-	unsigned detected;         /**< true if lcore was detected */
-	pthread_t thread_id;       /**< pthread identifier */
-	int pipe_master2slave[2];  /**< communication pipe with master */
-	int pipe_slave2master[2];  /**< communication pipe with master */
-	lcore_function_t * volatile f;         /**< function to call */
-	void * volatile arg;       /**< argument of function */
-	volatile int ret;          /**< return value of function */
-	volatile enum rte_lcore_state_t state; /**< lcore state */
-	unsigned socket_id;        /**< physical socket id for this lcore */
-	unsigned core_id;          /**< core number on socket for this lcore */
-	int core_index;            /**< relative index, starting from 0 */
-	rte_cpuset_t cpuset;       /**< cpu set which the lcore affinity to */
-	uint8_t core_role;         /**< role of core eg: OFF, RTE, SERVICE */
-};
-
-/**
- * Internal configuration (per-lcore)
- */
-extern struct lcore_config lcore_config[RTE_MAX_LCORE];
-
 RTE_DECLARE_PER_LCORE(unsigned, _lcore_id);  /**< Per thread "lcore id". */
 RTE_DECLARE_PER_LCORE(rte_cpuset_t, _cpuset); /**< Per thread "cpuset". */
+
+/**
+ * Get a lcore's role.
+ *
+ * @param lcore_id
+ *   The identifier of the lcore, which MUST be between 0 and RTE_MAX_LCORE-1.
+ * @return
+ *   The role of the lcore.
+ */
+enum rte_lcore_role_t rte_eal_lcore_role(unsigned int lcore_id);
 
 /**
  * Return the Application thread ID of the execution unit.
@@ -88,11 +59,7 @@ rte_lcore_id(void)
  * @return
  *   the id of the master lcore
  */
-static inline unsigned
-rte_get_master_lcore(void)
-{
-	return rte_eal_get_configuration()->master_lcore;
-}
+unsigned int rte_get_master_lcore(void);
 
 /**
  * Return the number of execution units (lcores) on the system.
@@ -100,12 +67,7 @@ rte_get_master_lcore(void)
  * @return
  *   the number of execution units (lcores) on the system.
  */
-static inline unsigned
-rte_lcore_count(void)
-{
-	const struct rte_config *cfg = rte_eal_get_configuration();
-	return cfg->lcore_count;
-}
+unsigned int rte_lcore_count(void);
 
 /**
  * Return the index of the lcore starting from zero.
@@ -183,7 +145,8 @@ rte_lcore_to_socket_id(unsigned int lcore_id);
  * @return
  *   The relative index, or -1 if not enabled.
  */
-__rte_experimental int
+__rte_experimental
+int
 rte_lcore_to_cpu_id(int lcore_id);
 
 /**
@@ -196,7 +159,8 @@ rte_lcore_to_cpu_id(int lcore_id);
  * @return
  *   The cpuset of that lcore
  */
-__rte_experimental rte_cpuset_t
+__rte_experimental
+rte_cpuset_t
 rte_lcore_cpuset(unsigned int lcore_id);
 
 /**
@@ -208,14 +172,7 @@ rte_lcore_cpuset(unsigned int lcore_id);
  * @return
  *   True if the given lcore is enabled; false otherwise.
  */
-static inline int
-rte_lcore_is_enabled(unsigned int lcore_id)
-{
-	struct rte_config *cfg = rte_eal_get_configuration();
-	if (lcore_id >= RTE_MAX_LCORE)
-		return 0;
-	return cfg->lcore_role[lcore_id] == ROLE_RTE;
-}
+int rte_lcore_is_enabled(unsigned int lcore_id);
 
 /**
  * Get the next enabled lcore ID.
@@ -230,25 +187,8 @@ rte_lcore_is_enabled(unsigned int lcore_id)
  * @return
  *   The next lcore_id or RTE_MAX_LCORE if not found.
  */
-static inline unsigned int
-rte_get_next_lcore(unsigned int i, int skip_master, int wrap)
-{
-	i++;
-	if (wrap)
-		i %= RTE_MAX_LCORE;
+unsigned int rte_get_next_lcore(unsigned int i, int skip_master, int wrap);
 
-	while (i < RTE_MAX_LCORE) {
-		if (!rte_lcore_is_enabled(i) ||
-		    (skip_master && (i == rte_get_master_lcore()))) {
-			i++;
-			if (wrap)
-				i %= RTE_MAX_LCORE;
-			continue;
-		}
-		break;
-	}
-	return i;
-}
 /**
  * Macro to browse all running lcores.
  */

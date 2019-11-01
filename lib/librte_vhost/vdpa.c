@@ -126,7 +126,7 @@ rte_vdpa_get_device_num(void)
 	return vdpa_device_num;
 }
 
-int __rte_experimental
+int
 rte_vdpa_relay_vring_used(int vid, uint16_t qid, void *vring_m)
 {
 	struct virtio_net *dev = get_device(vid);
@@ -201,7 +201,8 @@ rte_vdpa_relay_vring_used(int vid, uint16_t qid, void *vring_m)
 				goto fail;
 			desc = desc_ring[desc_id];
 			if (desc.flags & VRING_DESC_F_WRITE)
-				vhost_log_write(dev, desc.addr, desc.len);
+				vhost_log_write_iova(dev, vq, desc.addr,
+						     desc.len);
 			desc_id = desc.next;
 		} while (desc.flags & VRING_DESC_F_NEXT);
 

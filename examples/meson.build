@@ -11,11 +11,12 @@ execinfo = cc.find_library('execinfo', required: false)
 # list of all example apps. Keep 1-3 per line, in alphabetical order.
 all_examples = [
 	'bbdev_app', 'bond',
-	'bpf', 'cmdline',
+	'cmdline',
 	'distributor', 'ethtool',
-	'eventdev_pipeline', 'exception_path',
+	'eventdev_pipeline',
 	'fips_validation', 'flow_classify',
 	'flow_filtering', 'helloworld',
+	'ioat',
 	'ip_fragmentation', 'ip_pipeline',
 	'ip_reassembly', 'ipsec-secgw',
 	'ipv4_multicast', 'kni',
@@ -23,22 +24,26 @@ all_examples = [
 	'l2fwd-crypto', 'l2fwd-jobstats',
 	'l2fwd-keepalive', 'l3fwd',
 	'l3fwd-acl', 'l3fwd-power',
-	'l3fwd-vf', 'link_status_interrupt',
-	'load_balancer',
+	'link_status_interrupt',
 	'multi_process/client_server_mp/mp_client',
 	'multi_process/client_server_mp/mp_server',
 	'multi_process/hotplug_mp',
 	'multi_process/simple_mp',
 	'multi_process/symmetric_mp',
-	'netmap_compat', 'packet_ordering',
-	'performance-thread', 'ptpclient',
+	'ntb', 'packet_ordering',
+	'performance-thread/l3fwd-thread',
+	'performance-thread/pthread_shim',
+	'ptpclient',
 	'qos_meter', 'qos_sched',
-	'quota_watermark', 'rxtx_callbacks',
-	'server_node_efd', 'service_cores',
+	'rxtx_callbacks',
+	'server_node_efd/node',
+	'server_node_efd/server',
+	'service_cores',
 	'skeleton', 'tep_termination',
 	'timer', 'vdpa',
 	'vhost', 'vhost_crypto',
-	'vhost_scsi', 'vm_power_manager',
+	'vm_power_manager',
+	'vm_power_manager/guest_cli',
 	'vmdq', 'vmdq_dcb',
 ]
 # install all example code on install - irrespective of whether the example in
@@ -64,9 +69,6 @@ default_cflags = machine_args
 if cc.has_argument('-Wno-format-truncation')
 	default_cflags += '-Wno-format-truncation'
 endif
-
-# specify -D_GNU_SOURCE unconditionally
-default_cflags += '-D_GNU_SOURCE'
 
 foreach example: examples
 	name = example.split('/')[-1]

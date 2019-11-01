@@ -22,7 +22,7 @@ LDLIBS += -lrte_kvargs
 
 EXPORT_MAP := ../../rte_eal_version.map
 
-LIBABIVER := 10
+LIBABIVER := 12
 
 # specific to freebsd exec-env
 SRCS-$(CONFIG_RTE_EXEC_ENV_FREEBSD) := eal.c
@@ -44,6 +44,7 @@ SRCS-$(CONFIG_RTE_EXEC_ENV_FREEBSD) += eal_common_timer.c
 SRCS-$(CONFIG_RTE_EXEC_ENV_FREEBSD) += eal_common_memzone.c
 SRCS-$(CONFIG_RTE_EXEC_ENV_FREEBSD) += eal_common_log.c
 SRCS-$(CONFIG_RTE_EXEC_ENV_FREEBSD) += eal_common_launch.c
+SRCS-$(CONFIG_RTE_EXEC_ENV_FREEBSD) += eal_common_mcfg.c
 SRCS-$(CONFIG_RTE_EXEC_ENV_FREEBSD) += eal_common_memalloc.c
 SRCS-$(CONFIG_RTE_EXEC_ENV_FREEBSD) += eal_common_memory.c
 SRCS-$(CONFIG_RTE_EXEC_ENV_FREEBSD) += eal_common_tailqs.c
@@ -69,6 +70,7 @@ SRCS-$(CONFIG_RTE_EXEC_ENV_FREEBSD) += malloc_mp.c
 SRCS-$(CONFIG_RTE_EXEC_ENV_FREEBSD) += rte_keepalive.c
 SRCS-$(CONFIG_RTE_EXEC_ENV_FREEBSD) += rte_option.c
 SRCS-$(CONFIG_RTE_EXEC_ENV_FREEBSD) += rte_service.c
+SRCS-$(CONFIG_RTE_EXEC_ENV_FREEBSD) += rte_random.c
 SRCS-$(CONFIG_RTE_EXEC_ENV_FREEBSD) += rte_reciprocal.c
 
 # from arch dir

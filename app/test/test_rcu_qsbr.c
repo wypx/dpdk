@@ -3,7 +3,6 @@
  */
 
 #include <stdio.h>
-#include <stdbool.h>
 #include <rte_pause.h>
 #include <rte_rcu_qsbr.h>
 #include <rte_hash.h>
@@ -26,19 +25,18 @@
 /* Make sure that this has the same value as __RTE_QSBR_CNT_INIT */
 #define TEST_RCU_QSBR_CNT_INIT 1
 
-#define TEST_RCU_MAX_LCORE 128
-uint16_t enabled_core_ids[TEST_RCU_MAX_LCORE];
-uint8_t num_cores;
+static uint16_t enabled_core_ids[RTE_MAX_LCORE];
+static unsigned int num_cores;
 
 static uint32_t *keys;
 #define TOTAL_ENTRY (1024 * 8)
 #define COUNTER_VALUE 4096
-static uint32_t *hash_data[TEST_RCU_MAX_LCORE][TOTAL_ENTRY];
+static uint32_t *hash_data[RTE_MAX_LCORE][TOTAL_ENTRY];
 static uint8_t writer_done;
 
-static struct rte_rcu_qsbr *t[TEST_RCU_MAX_LCORE];
-struct rte_hash *h[TEST_RCU_MAX_LCORE];
-char hash_name[TEST_RCU_MAX_LCORE][8];
+static struct rte_rcu_qsbr *t[RTE_MAX_LCORE];
+static struct rte_hash *h[RTE_MAX_LCORE];
+static char hash_name[RTE_MAX_LCORE][8];
 
 struct test_rcu_thread_info {
 	/* Index in RCU array */
@@ -48,38 +46,17 @@ struct test_rcu_thread_info {
 	/* lcore IDs registered on the RCU variable */
 	uint16_t r_core_ids[2];
 };
-struct test_rcu_thread_info thread_info[TEST_RCU_MAX_LCORE/4];
-
-static inline int
-get_enabled_cores_mask(void)
-{
-	uint16_t core_id;
-	uint32_t max_cores = rte_lcore_count();
-
-	if (max_cores > TEST_RCU_MAX_LCORE) {
-		printf("Number of cores exceed %d\n", TEST_RCU_MAX_LCORE);
-		return -1;
-	}
-
-	core_id = 0;
-	num_cores = 0;
-	RTE_LCORE_FOREACH_SLAVE(core_id) {
-		enabled_core_ids[num_cores] = core_id;
-		num_cores++;
-	}
-
-	return 0;
-}
+static struct test_rcu_thread_info thread_info[RTE_MAX_LCORE/4];
 
 static int
 alloc_rcu(void)
 {
 	int i;
-	uint32_t sz;
+	size_t sz;
 
-	sz = rte_rcu_qsbr_get_memsize(TEST_RCU_MAX_LCORE);
+	sz = rte_rcu_qsbr_get_memsize(RTE_MAX_LCORE);
 
-	for (i = 0; i < TEST_RCU_MAX_LCORE; i++)
+	for (i = 0; i < RTE_MAX_LCORE; i++)
 		t[i] = (struct rte_rcu_qsbr *)rte_zmalloc(NULL, sz,
 						RTE_CACHE_LINE_SIZE);
 
@@ -91,7 +68,7 @@ free_rcu(void)
 {
 	int i;
 
-	for (i = 0; i < TEST_RCU_MAX_LCORE; i++)
+	for (i = 0; i < RTE_MAX_LCORE; i++)
 		rte_free(t[i]);
 
 	return 0;
@@ -104,20 +81,24 @@ free_rcu(void)
 static int
 test_rcu_qsbr_get_memsize(void)
 {
-	uint32_t sz;
+	size_t sz;
 
 	printf("\nTest rte_rcu_qsbr_thread_register()\n");
 
 	sz = rte_rcu_qsbr_get_memsize(0);
 	TEST_RCU_QSBR_RETURN_IF_ERROR((sz != 1), "Get Memsize for 0 threads");
 
-	sz = rte_rcu_qsbr_get_memsize(TEST_RCU_MAX_LCORE);
+	sz = rte_rcu_qsbr_get_memsize(128);
 	/* For 128 threads,
 	 * for machines with cache line size of 64B - 8384
 	 * for machines with cache line size of 128 - 16768
 	 */
-	TEST_RCU_QSBR_RETURN_IF_ERROR((sz != 8384 && sz != 16768),
-		"Get Memsize");
+	if (RTE_CACHE_LINE_SIZE == 64)
+		TEST_RCU_QSBR_RETURN_IF_ERROR((sz != 8384),
+			"Get Memsize for 128 threads");
+	else if (RTE_CACHE_LINE_SIZE == 128)
+		TEST_RCU_QSBR_RETURN_IF_ERROR((sz != 16768),
+			"Get Memsize for 128 threads");
 
 	return 0;
 }
@@ -132,7 +113,7 @@ test_rcu_qsbr_init(void)
 
 	printf("\nTest rte_rcu_qsbr_init()\n");
 
-	r = rte_rcu_qsbr_init(NULL, TEST_RCU_MAX_LCORE);
+	r = rte_rcu_qsbr_init(NULL, RTE_MAX_LCORE);
 	TEST_RCU_QSBR_RETURN_IF_ERROR((r != 1), "NULL variable");
 
 	return 0;
@@ -156,7 +137,7 @@ test_rcu_qsbr_thread_register(void)
 	TEST_RCU_QSBR_RETURN_IF_ERROR((ret == 0),
 		"NULL variable, invalid thread id");
 
-	rte_rcu_qsbr_init(t[0], TEST_RCU_MAX_LCORE);
+	rte_rcu_qsbr_init(t[0], RTE_MAX_LCORE);
 
 	/* Register valid thread id */
 	ret = rte_rcu_qsbr_thread_register(t[0], enabled_core_ids[0]);
@@ -168,7 +149,7 @@ test_rcu_qsbr_thread_register(void)
 		"Already registered thread id");
 
 	/* Register valid thread id - max allowed thread id */
-	ret = rte_rcu_qsbr_thread_register(t[0], TEST_RCU_MAX_LCORE - 1);
+	ret = rte_rcu_qsbr_thread_register(t[0], RTE_MAX_LCORE - 1);
 	TEST_RCU_QSBR_RETURN_IF_ERROR((ret == 1), "Max thread id");
 
 	ret = rte_rcu_qsbr_thread_register(t[0], 100000);
@@ -185,9 +166,10 @@ test_rcu_qsbr_thread_register(void)
 static int
 test_rcu_qsbr_thread_unregister(void)
 {
-	int i, j, ret;
+	unsigned int num_threads[3] = {1, RTE_MAX_LCORE, 1};
+	unsigned int i, j;
 	uint64_t token;
-	uint8_t num_threads[3] = {1, TEST_RCU_MAX_LCORE, 1};
+	int ret;
 
 	printf("\nTest rte_rcu_qsbr_thread_unregister()\n");
 
@@ -198,7 +180,7 @@ test_rcu_qsbr_thread_unregister(void)
 	TEST_RCU_QSBR_RETURN_IF_ERROR((ret == 0),
 		"NULL variable, invalid thread id");
 
-	rte_rcu_qsbr_init(t[0], TEST_RCU_MAX_LCORE);
+	rte_rcu_qsbr_init(t[0], RTE_MAX_LCORE);
 
 	rte_rcu_qsbr_thread_register(t[0], enabled_core_ids[0]);
 
@@ -207,7 +189,7 @@ test_rcu_qsbr_thread_unregister(void)
 		"NULL variable, invalid thread id");
 
 	/* Find first disabled core */
-	for (i = 0; i < TEST_RCU_MAX_LCORE; i++) {
+	for (i = 0; i < RTE_MAX_LCORE; i++) {
 		if (enabled_core_ids[i] == 0)
 			break;
 	}
@@ -232,15 +214,15 @@ test_rcu_qsbr_thread_unregister(void)
 	/*
 	 * Test with different thread_ids:
 	 * 1 - thread_id = 0
-	 * 2 - All possible thread_ids, from 0 to TEST_RCU_MAX_LCORE
-	 * 3 - thread_id = TEST_RCU_MAX_LCORE - 1
+	 * 2 - All possible thread_ids, from 0 to RTE_MAX_LCORE
+	 * 3 - thread_id = RTE_MAX_LCORE - 1
 	 */
 	for (j = 0; j < 3; j++) {
-		rte_rcu_qsbr_init(t[0], TEST_RCU_MAX_LCORE);
+		rte_rcu_qsbr_init(t[0], RTE_MAX_LCORE);
 
 		for (i = 0; i < num_threads[j]; i++)
 			rte_rcu_qsbr_thread_register(t[0],
-				(j == 2) ? (TEST_RCU_MAX_LCORE - 1) : i);
+				(j == 2) ? (RTE_MAX_LCORE - 1) : i);
 
 		token = rte_rcu_qsbr_start(t[0]);
 		TEST_RCU_QSBR_RETURN_IF_ERROR(
@@ -248,10 +230,10 @@ test_rcu_qsbr_thread_unregister(void)
 		/* Update quiescent state counter */
 		for (i = 0; i < num_threads[j]; i++) {
 			/* Skip one update */
-			if (i == (TEST_RCU_MAX_LCORE - 10))
+			if (i == (RTE_MAX_LCORE - 10))
 				continue;
 			rte_rcu_qsbr_quiescent(t[0],
-				(j == 2) ? (TEST_RCU_MAX_LCORE - 1) : i);
+				(j == 2) ? (RTE_MAX_LCORE - 1) : i);
 		}
 
 		if (j == 1) {
@@ -260,7 +242,7 @@ test_rcu_qsbr_thread_unregister(void)
 			TEST_RCU_QSBR_RETURN_IF_ERROR((ret == 0),
 						"Non-blocking QSBR check");
 			/* Update the previously skipped thread */
-			rte_rcu_qsbr_quiescent(t[0], TEST_RCU_MAX_LCORE - 10);
+			rte_rcu_qsbr_quiescent(t[0], RTE_MAX_LCORE - 10);
 		}
 
 		/* Validate the updates */
@@ -270,7 +252,7 @@ test_rcu_qsbr_thread_unregister(void)
 
 		for (i = 0; i < num_threads[j]; i++)
 			rte_rcu_qsbr_thread_unregister(t[0],
-				(j == 2) ? (TEST_RCU_MAX_LCORE - 1) : i);
+				(j == 2) ? (RTE_MAX_LCORE - 1) : i);
 
 		/* Check with no thread registered */
 		ret = rte_rcu_qsbr_check(t[0], token, true);
@@ -292,7 +274,7 @@ test_rcu_qsbr_start(void)
 
 	printf("\nTest rte_rcu_qsbr_start()\n");
 
-	rte_rcu_qsbr_init(t[0], TEST_RCU_MAX_LCORE);
+	rte_rcu_qsbr_init(t[0], RTE_MAX_LCORE);
 
 	for (i = 0; i < 3; i++)
 		rte_rcu_qsbr_thread_register(t[0], enabled_core_ids[i]);
@@ -331,7 +313,7 @@ test_rcu_qsbr_check(void)
 
 	printf("\nTest rte_rcu_qsbr_check()\n");
 
-	rte_rcu_qsbr_init(t[0], TEST_RCU_MAX_LCORE);
+	rte_rcu_qsbr_init(t[0], RTE_MAX_LCORE);
 
 	token = rte_rcu_qsbr_start(t[0]);
 	TEST_RCU_QSBR_RETURN_IF_ERROR(
@@ -365,7 +347,7 @@ test_rcu_qsbr_check(void)
 	ret = rte_rcu_qsbr_check(t[0], token, true);
 	TEST_RCU_QSBR_RETURN_IF_ERROR((ret == 0), "Blocking QSBR check");
 
-	rte_rcu_qsbr_init(t[0], TEST_RCU_MAX_LCORE);
+	rte_rcu_qsbr_init(t[0], RTE_MAX_LCORE);
 
 	for (i = 0; i < 4; i++)
 		rte_rcu_qsbr_thread_register(t[0], enabled_core_ids[i]);
@@ -410,11 +392,11 @@ test_rcu_qsbr_synchronize_reader(void *arg)
 static int
 test_rcu_qsbr_synchronize(void)
 {
-	int i;
+	unsigned int i;
 
 	printf("\nTest rte_rcu_qsbr_synchronize()\n");
 
-	rte_rcu_qsbr_init(t[0], TEST_RCU_MAX_LCORE);
+	rte_rcu_qsbr_init(t[0], RTE_MAX_LCORE);
 
 	/* Test if the API returns when there are no threads reporting
 	 * QS on the variable.
@@ -424,7 +406,7 @@ test_rcu_qsbr_synchronize(void)
 	/* Test if the API returns when there are threads registered
 	 * but not online.
 	 */
-	for (i = 0; i < TEST_RCU_MAX_LCORE; i++)
+	for (i = 0; i < RTE_MAX_LCORE; i++)
 		rte_rcu_qsbr_thread_register(t[0], i);
 	rte_rcu_qsbr_synchronize(t[0], RTE_QSBR_THRID_INVALID);
 
@@ -436,12 +418,12 @@ test_rcu_qsbr_synchronize(void)
 	rte_rcu_qsbr_thread_offline(t[0], 0);
 
 	/* Check the other boundary */
-	rte_rcu_qsbr_thread_online(t[0], TEST_RCU_MAX_LCORE - 1);
-	rte_rcu_qsbr_synchronize(t[0], TEST_RCU_MAX_LCORE - 1);
-	rte_rcu_qsbr_thread_offline(t[0], TEST_RCU_MAX_LCORE - 1);
+	rte_rcu_qsbr_thread_online(t[0], RTE_MAX_LCORE - 1);
+	rte_rcu_qsbr_synchronize(t[0], RTE_MAX_LCORE - 1);
+	rte_rcu_qsbr_thread_offline(t[0], RTE_MAX_LCORE - 1);
 
 	/* Test if the API returns after unregisterng all the threads */
-	for (i = 0; i < TEST_RCU_MAX_LCORE; i++)
+	for (i = 0; i < RTE_MAX_LCORE; i++)
 		rte_rcu_qsbr_thread_unregister(t[0], i);
 	rte_rcu_qsbr_synchronize(t[0], RTE_QSBR_THRID_INVALID);
 
@@ -474,7 +456,7 @@ test_rcu_qsbr_thread_online(void)
 
 	printf("Test rte_rcu_qsbr_thread_online()\n");
 
-	rte_rcu_qsbr_init(t[0], TEST_RCU_MAX_LCORE);
+	rte_rcu_qsbr_init(t[0], RTE_MAX_LCORE);
 
 	/* Register 2 threads to validate that only the
 	 * online thread is waited upon.
@@ -501,9 +483,9 @@ test_rcu_qsbr_thread_online(void)
 	TEST_RCU_QSBR_RETURN_IF_ERROR((ret == 0), "thread update");
 
 	/* Make all the threads online */
-	rte_rcu_qsbr_init(t[0], TEST_RCU_MAX_LCORE);
+	rte_rcu_qsbr_init(t[0], RTE_MAX_LCORE);
 	token = rte_rcu_qsbr_start(t[0]);
-	for (i = 0; i < TEST_RCU_MAX_LCORE; i++) {
+	for (i = 0; i < RTE_MAX_LCORE; i++) {
 		rte_rcu_qsbr_thread_register(t[0], i);
 		rte_rcu_qsbr_thread_online(t[0], i);
 	}
@@ -512,7 +494,7 @@ test_rcu_qsbr_thread_online(void)
 	TEST_RCU_QSBR_RETURN_IF_ERROR((ret == 0), "thread online");
 	/* Check if all the online threads can report QS */
 	token = rte_rcu_qsbr_start(t[0]);
-	for (i = 0; i < TEST_RCU_MAX_LCORE; i++)
+	for (i = 0; i < RTE_MAX_LCORE; i++)
 		rte_rcu_qsbr_quiescent(t[0], i);
 	ret = rte_rcu_qsbr_check(t[0], token, true);
 	TEST_RCU_QSBR_RETURN_IF_ERROR((ret == 0), "thread update");
@@ -532,7 +514,7 @@ test_rcu_qsbr_thread_offline(void)
 
 	printf("\nTest rte_rcu_qsbr_thread_offline()\n");
 
-	rte_rcu_qsbr_init(t[0], TEST_RCU_MAX_LCORE);
+	rte_rcu_qsbr_init(t[0], RTE_MAX_LCORE);
 
 	rte_rcu_qsbr_thread_register(t[0], enabled_core_ids[0]);
 
@@ -560,10 +542,10 @@ test_rcu_qsbr_thread_offline(void)
 	/*
 	 * Check a sequence of online/status/offline/status/online/status
 	 */
-	rte_rcu_qsbr_init(t[0], TEST_RCU_MAX_LCORE);
+	rte_rcu_qsbr_init(t[0], RTE_MAX_LCORE);
 	token = rte_rcu_qsbr_start(t[0]);
 	/* Make the threads online */
-	for (i = 0; i < TEST_RCU_MAX_LCORE; i++) {
+	for (i = 0; i < RTE_MAX_LCORE; i++) {
 		rte_rcu_qsbr_thread_register(t[0], i);
 		rte_rcu_qsbr_thread_online(t[0], i);
 	}
@@ -574,13 +556,13 @@ test_rcu_qsbr_thread_offline(void)
 
 	/* Check if all the online threads can report QS */
 	token = rte_rcu_qsbr_start(t[0]);
-	for (i = 0; i < TEST_RCU_MAX_LCORE; i++)
+	for (i = 0; i < RTE_MAX_LCORE; i++)
 		rte_rcu_qsbr_quiescent(t[0], i);
 	ret = rte_rcu_qsbr_check(t[0], token, true);
 	TEST_RCU_QSBR_RETURN_IF_ERROR((ret == 0), "report QS");
 
 	/* Make all the threads offline */
-	for (i = 0; i < TEST_RCU_MAX_LCORE; i++)
+	for (i = 0; i < RTE_MAX_LCORE; i++)
 		rte_rcu_qsbr_thread_offline(t[0], i);
 	/* Make sure these threads are not being waited on */
 	token = rte_rcu_qsbr_start(t[0]);
@@ -588,11 +570,11 @@ test_rcu_qsbr_thread_offline(void)
 	TEST_RCU_QSBR_RETURN_IF_ERROR((ret == 0), "offline QS");
 
 	/* Make the threads online */
-	for (i = 0; i < TEST_RCU_MAX_LCORE; i++)
+	for (i = 0; i < RTE_MAX_LCORE; i++)
 		rte_rcu_qsbr_thread_online(t[0], i);
 	/* Check if all the online threads can report QS */
 	token = rte_rcu_qsbr_start(t[0]);
-	for (i = 0; i < TEST_RCU_MAX_LCORE; i++)
+	for (i = 0; i < RTE_MAX_LCORE; i++)
 		rte_rcu_qsbr_quiescent(t[0], i);
 	ret = rte_rcu_qsbr_check(t[0], token, true);
 	TEST_RCU_QSBR_RETURN_IF_ERROR((ret == 0), "online again");
@@ -615,8 +597,8 @@ test_rcu_qsbr_dump(void)
 	rte_rcu_qsbr_dump(stdout, NULL);
 	rte_rcu_qsbr_dump(NULL, NULL);
 
-	rte_rcu_qsbr_init(t[0], TEST_RCU_MAX_LCORE);
-	rte_rcu_qsbr_init(t[1], TEST_RCU_MAX_LCORE);
+	rte_rcu_qsbr_init(t[0], RTE_MAX_LCORE);
+	rte_rcu_qsbr_init(t[1], RTE_MAX_LCORE);
 
 	/* QS variable with 0 core mask */
 	rte_rcu_qsbr_dump(stdout, t[0]);
@@ -738,8 +720,7 @@ init_hash(int hash_id)
 
 	for (i = 0; i < TOTAL_ENTRY; i++) {
 		hash_data[hash_id][i] =
-			rte_zmalloc(NULL,
-				sizeof(uint32_t) * TEST_RCU_MAX_LCORE, 0);
+			rte_zmalloc(NULL, sizeof(uint32_t) * RTE_MAX_LCORE, 0);
 		if (hash_data[hash_id][i] == NULL) {
 			printf("No memory\n");
 			return NULL;
@@ -781,7 +762,7 @@ test_rcu_qsbr_sw_sv_3qs(void)
 
 	printf("Test: 1 writer, 1 QSBR variable, simultaneous QSBR queries\n");
 
-	rte_rcu_qsbr_init(t[0], TEST_RCU_MAX_LCORE);
+	rte_rcu_qsbr_init(t[0], RTE_MAX_LCORE);
 
 	/* Shared data structure created */
 	h[0] = init_hash(0);
@@ -912,8 +893,8 @@ error:
 static int
 test_rcu_qsbr_mw_mv_mqs(void)
 {
-	int i, j;
-	uint8_t test_cores;
+	unsigned int i, j;
+	unsigned int test_cores;
 
 	writer_done = 0;
 	test_cores = num_cores / 4;
@@ -924,7 +905,7 @@ test_rcu_qsbr_mw_mv_mqs(void)
 
 	for (i = 0; i < test_cores / 4; i++) {
 		j = i * 4;
-		rte_rcu_qsbr_init(t[i], TEST_RCU_MAX_LCORE);
+		rte_rcu_qsbr_init(t[i], RTE_MAX_LCORE);
 		h[i] = init_hash(i);
 		if (h[i] == NULL) {
 			printf("Hash init failed\n");
@@ -998,12 +979,17 @@ error:
 static int
 test_rcu_qsbr_main(void)
 {
-	if (get_enabled_cores_mask() != 0)
-		return -1;
+	uint16_t core_id;
 
-	if (num_cores < 4) {
-		printf("Test failed! Need 4 or more cores\n");
-		goto test_fail;
+	if (rte_lcore_count() < 5) {
+		printf("Not enough cores for rcu_qsbr_autotest, expecting at least 5\n");
+		return TEST_SKIPPED;
+	}
+
+	num_cores = 0;
+	RTE_LCORE_FOREACH_SLAVE(core_id) {
+		enabled_core_ids[num_cores] = core_id;
+		num_cores++;
 	}
 
 	/* Error-checking test cases */

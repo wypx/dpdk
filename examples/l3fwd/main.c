@@ -718,6 +718,7 @@ check_all_ports_link_status(uint32_t port_mask)
 	uint16_t portid;
 	uint8_t count, all_ports_up, print_flag = 0;
 	struct rte_eth_link link;
+	int ret;
 
 	printf("\nChecking link status");
 	fflush(stdout);
@@ -731,7 +732,14 @@ check_all_ports_link_status(uint32_t port_mask)
 			if ((port_mask & (1 << portid)) == 0)
 				continue;
 			memset(&link, 0, sizeof(link));
-			rte_eth_link_get_nowait(portid, &link);
+			ret = rte_eth_link_get_nowait(portid, &link);
+			if (ret < 0) {
+				all_ports_up = 0;
+				if (print_flag == 1)
+					printf("Port %u link get failed: %s\n",
+						portid, rte_strerror(-ret));
+				continue;
+			}
 			/* print link status if flag set */
 			if (print_flag == 1) {
 				if (link.link_status)
@@ -874,7 +882,12 @@ main(int argc, char **argv)
 		printf("Creating queues: nb_rxq=%d nb_txq=%u... ",
 			nb_rx_queue, (unsigned)n_tx_queue );
 
-		rte_eth_dev_info_get(portid, &dev_info);
+		ret = rte_eth_dev_info_get(portid, &dev_info);
+		if (ret != 0)
+			rte_exit(EXIT_FAILURE,
+				"Error during getting device (port %u) info: %s\n",
+				portid, strerror(-ret));
+
 		if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_MBUF_FAST_FREE)
 			local_port_conf.txmode.offloads |=
 				DEV_TX_OFFLOAD_MBUF_FAST_FREE;
@@ -904,7 +917,12 @@ main(int argc, char **argv)
 				 "Cannot adjust number of descriptors: err=%d, "
 				 "port=%d\n", ret, portid);
 
-		rte_eth_macaddr_get(portid, &ports_eth_addr[portid]);
+		ret = rte_eth_macaddr_get(portid, &ports_eth_addr[portid]);
+		if (ret < 0)
+			rte_exit(EXIT_FAILURE,
+				 "Cannot get MAC address: err=%d, port=%d\n",
+				 ret, portid);
+
 		print_ethaddr(" Address:", &ports_eth_addr[portid]);
 		printf(", ");
 		print_ethaddr("Destination:",
@@ -971,14 +989,10 @@ main(int argc, char **argv)
 		fflush(stdout);
 		/* init RX queues */
 		for(queue = 0; queue < qconf->n_rx_queue; ++queue) {
-			struct rte_eth_dev *dev;
-			struct rte_eth_conf *conf;
 			struct rte_eth_rxconf rxq_conf;
 
 			portid = qconf->rx_queue_list[queue].port_id;
 			queueid = qconf->rx_queue_list[queue].queue_id;
-			dev = &rte_eth_devices[portid];
-			conf = &dev->data->dev_conf;
 
 			if (numa_on)
 				socketid =
@@ -989,9 +1003,14 @@ main(int argc, char **argv)
 			printf("rxq=%d,%d,%d ", portid, queueid, socketid);
 			fflush(stdout);
 
-			rte_eth_dev_info_get(portid, &dev_info);
+			ret = rte_eth_dev_info_get(portid, &dev_info);
+			if (ret != 0)
+				rte_exit(EXIT_FAILURE,
+					"Error during getting device (port %u) info: %s\n",
+					portid, strerror(-ret));
+
 			rxq_conf = dev_info.default_rxconf;
-			rxq_conf.offloads = conf->rxmode.offloads;
+			rxq_conf.offloads = port_conf.rxmode.offloads;
 			if (!per_port_pool)
 				ret = rte_eth_rx_queue_setup(portid, queueid,
 						nb_rxd, socketid,
@@ -1029,8 +1048,13 @@ main(int argc, char **argv)
 		 * to itself through 2 cross-connected  ports of the
 		 * target machine.
 		 */
-		if (promiscuous_on)
-			rte_eth_promiscuous_enable(portid);
+		if (promiscuous_on) {
+			ret = rte_eth_promiscuous_enable(portid);
+			if (ret != 0)
+				rte_exit(EXIT_FAILURE,
+					"rte_eth_promiscuous_enable: err=%s, port=%u\n",
+					rte_strerror(-ret), portid);
+		}
 	}
 
 	printf("\n");

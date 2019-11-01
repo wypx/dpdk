@@ -20,6 +20,8 @@ dpdk_driver_classes = []
 dpdk_drivers = []
 dpdk_extra_ldflags = []
 dpdk_app_link_libraries = []
+dpdk_libs_disabled = []
+dpdk_drvs_disabled = []
 
 # configure the build, and make sure configs here and in config folder are
 # able to be included in any file. We also store a global array of include dirs
@@ -63,6 +65,10 @@ configure_file(output: build_cfg,
 dpdk_drivers = ['-Wl,--whole-archive'] + dpdk_drivers + ['-Wl,--no-whole-archive']
 
 pkg = import('pkgconfig')
+pkg_extra_cflags = ['-include', 'rte_config.h'] + machine_args
+if is_freebsd
+	pkg_extra_cflags += ['-D__BSD_VISIBLE']
+endif
 pkg.generate(name: meson.project_name(),
 	filebase: 'lib' + meson.project_name().to_lower(),
 	version: meson.project_version(),
@@ -75,7 +81,7 @@ pkg.generate(name: meson.project_name(),
 Note that CFLAGS might contain an -march flag higher than typical baseline.
 This is required for a number of static inline functions in the public headers.''',
 	subdirs: [get_option('include_subdir_arch'), '.'],
-	extra_cflags: ['-include', 'rte_config.h'] + machine_args
+	extra_cflags: pkg_extra_cflags
 )
 
 # final output, list all the libs and drivers to be built
@@ -106,5 +112,18 @@ foreach class:dpdk_driver_classes
 			output_count = 0
 		endif
 	endforeach
+endforeach
+message(output_message + '\n')
+
+output_message = '\n=================\nContent Skipped\n=================\n'
+output_message += '\nlibs:\n\t'
+foreach lib:dpdk_libs_disabled
+	reason = get_variable(lib.underscorify() + '_disable_reason')
+	output_message += lib + ':\t' + reason + '\n\t'
+endforeach
+output_message += '\ndrivers:\n\t'
+foreach drv:dpdk_drvs_disabled
+	reason = get_variable(drv.underscorify() + '_disable_reason')
+	output_message += drv + ':\t' + reason + '\n\t'
 endforeach
 message(output_message + '\n')

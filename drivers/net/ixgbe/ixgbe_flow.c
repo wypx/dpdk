@@ -1048,13 +1048,13 @@ cons_parse_syn_filter(const struct rte_flow_attr *attr,
 
 	tcp_spec = item->spec;
 	tcp_mask = item->mask;
-	if (!(tcp_spec->hdr.tcp_flags & TCP_SYN_FLAG) ||
+	if (!(tcp_spec->hdr.tcp_flags & RTE_TCP_SYN_FLAG) ||
 	    tcp_mask->hdr.src_port ||
 	    tcp_mask->hdr.dst_port ||
 	    tcp_mask->hdr.sent_seq ||
 	    tcp_mask->hdr.recv_ack ||
 	    tcp_mask->hdr.data_off ||
-	    tcp_mask->hdr.tcp_flags != TCP_SYN_FLAG ||
+	    tcp_mask->hdr.tcp_flags != RTE_TCP_SYN_FLAG ||
 	    tcp_mask->hdr.rx_win ||
 	    tcp_mask->hdr.cksum ||
 	    tcp_mask->hdr.tcp_urp) {
@@ -2874,7 +2874,7 @@ ixgbe_parse_rss_filter(struct rte_eth_dev *dev,
 	/* check if the next not void item is END */
 	act = next_no_void_action(actions, act);
 	if (act->type != RTE_FLOW_ACTION_TYPE_END) {
-		memset(rss_conf, 0, sizeof(struct rte_eth_rss_conf));
+		memset(rss_conf, 0, sizeof(struct ixgbe_rte_flow_rss_conf));
 		rte_flow_error_set(error, EINVAL,
 			RTE_FLOW_ERROR_TYPE_ACTION,
 			act, "Not supported action.");

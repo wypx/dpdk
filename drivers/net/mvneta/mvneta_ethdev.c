@@ -27,15 +27,6 @@
 
 #define MVNETA_IFACE_NAME_ARG "iface"
 
-#define MVNETA_RX_OFFLOADS (DEV_RX_OFFLOAD_JUMBO_FRAME | \
-			  DEV_RX_OFFLOAD_CHECKSUM)
-
-/** Port Tx offloads capabilities */
-#define MVNETA_TX_OFFLOADS (DEV_TX_OFFLOAD_IPV4_CKSUM | \
-			  DEV_TX_OFFLOAD_UDP_CKSUM | \
-			  DEV_TX_OFFLOAD_TCP_CKSUM | \
-			  DEV_TX_OFFLOAD_MULTI_SEGS)
-
 #define MVNETA_PKT_SIZE_MAX (16382 - MV_MH_SIZE) /* 9700B */
 #define MVNETA_DEFAULT_MTU 1500
 
@@ -56,6 +47,10 @@ struct mvneta_ifnames {
 };
 
 static int mvneta_dev_num;
+
+static int mvneta_stats_reset(struct rte_eth_dev *dev);
+static int rte_pmd_mvneta_remove(struct rte_vdev_device *vdev);
+
 
 /**
  * Deinitialize packet processor.
@@ -158,7 +153,7 @@ mvneta_dev_configure(struct rte_eth_dev *dev)
  * @param info
  *   Info structure output buffer.
  */
-static void
+static int
 mvneta_dev_infos_get(struct rte_eth_dev *dev __rte_unused,
 		   struct rte_eth_dev_info *info)
 {
@@ -192,6 +187,8 @@ mvneta_dev_infos_get(struct rte_eth_dev *dev __rte_unused,
 	info->default_txconf.offloads = 0;
 
 	info->max_rx_pktlen = MVNETA_PKT_SIZE_MAX;
+
+	return 0;
 }
 
 /**
@@ -359,6 +356,8 @@ mvneta_dev_start(struct rte_eth_dev *dev)
 	}
 	priv->ppio_id = priv->ppio->port_id;
 
+	mvneta_stats_reset(dev);
+
 	/*
 	 * In case there are some some stale uc/mc mac addresses flush them
 	 * here. It cannot be done during mvneta_dev_close() as port information
@@ -450,6 +449,14 @@ mvneta_dev_close(struct rte_eth_dev *dev)
 		mvneta_tx_queue_release(dev->data->tx_queues[i]);
 		dev->data->tx_queues[i] = NULL;
 	}
+
+	mvneta_dev_num--;
+
+	if (mvneta_dev_num == 0) {
+		MVNETA_LOG(INFO, "Perform MUSDK deinit");
+		mvneta_neta_deinit();
+		rte_mvep_deinit(MVEP_MOD_T_NETA);
+	}
 }
 
 /**
@@ -527,25 +534,30 @@ mvneta_link_update(struct rte_eth_dev *dev, int wait_to_complete __rte_unused)
  *
  * @param dev
  *   Pointer to Ethernet device structure.
+ *
+ * @return
+ *   always 0
  */
-static void
+static int
 mvneta_promiscuous_enable(struct rte_eth_dev *dev)
 {
 	struct mvneta_priv *priv = dev->data->dev_private;
 	int ret, en;
 
 	if (!priv->ppio)
-		return;
+		return 0;
 
 	neta_ppio_get_promisc(priv->ppio, &en);
 	if (en) {
 		MVNETA_LOG(INFO, "Promiscuous already enabled");
-		return;
+		return 0;
 	}
 
 	ret = neta_ppio_set_promisc(priv->ppio, 1);
 	if (ret)
 		MVNETA_LOG(ERR, "Failed to enable promiscuous mode");
+
+	return 0;
 }
 
 /**
@@ -553,25 +565,30 @@ mvneta_promiscuous_enable(struct rte_eth_dev *dev)
  *
  * @param dev
  *   Pointer to Ethernet device structure.
+ *
+ * @return
+ *   always 0
  */
-static void
+static int
 mvneta_promiscuous_disable(struct rte_eth_dev *dev)
 {
 	struct mvneta_priv *priv = dev->data->dev_private;
 	int ret, en;
 
 	if (!priv->ppio)
-		return;
+		return 0;
 
 	neta_ppio_get_promisc(priv->ppio, &en);
 	if (!en) {
 		MVNETA_LOG(INFO, "Promiscuous already disabled");
-		return;
+		return 0;
 	}
 
 	ret = neta_ppio_set_promisc(priv->ppio, 0);
 	if (ret)
 		MVNETA_LOG(ERR, "Failed to disable promiscuous mode");
+
+	return 0;
 }
 
 /**
@@ -707,10 +724,7 @@ mvneta_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *stats)
 	stats->imissed += ppio_stats.rx_discard +
 			  ppio_stats.rx_overrun -
 			  priv->prev_stats.imissed;
-
-	stats->ierrors = ppio_stats.rx_packets_err +
-			ppio_stats.rx_errors +
-			ppio_stats.rx_crc_error -
+	stats->ierrors = ppio_stats.rx_packets_err -
 			priv->prev_stats.ierrors;
 	stats->oerrors = ppio_stats.tx_errors - priv->prev_stats.oerrors;
 
@@ -722,19 +736,24 @@ mvneta_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *stats)
  *
  * @param dev
  *   Pointer to Ethernet device structure.
+ *
+ * @return
+ *   0 on success, negative error value otherwise.
  */
-static void
+static int
 mvneta_stats_reset(struct rte_eth_dev *dev)
 {
 	struct mvneta_priv *priv = dev->data->dev_private;
 	unsigned int ret;
 
 	if (!priv->ppio)
-		return;
+		return 0;
 
 	ret = mvneta_stats_get(dev, &priv->prev_stats);
 	if (unlikely(ret))
 		RTE_LOG(ERR, PMD, "Failed to reset port statistics");
+
+	return ret;
 }
 
 
@@ -815,6 +834,9 @@ mvneta_eth_dev_create(struct rte_vdev_device *vdev, const char *name)
 	eth_dev->rx_pkt_burst = mvneta_rx_pkt_burst;
 	mvneta_set_tx_function(eth_dev);
 	eth_dev->dev_ops = &mvneta_ops;
+
+	/* Flag to call rte_eth_dev_release_port() in rte_eth_dev_close(). */
+	eth_dev->data->dev_flags |= RTE_ETH_DEV_CLOSE_REMOVE;
 
 	rte_eth_dev_probing_finish(eth_dev);
 	return 0;
@@ -914,20 +936,16 @@ init_devices:
 		ret = mvneta_eth_dev_create(vdev, ifnames.names[i]);
 		if (ret)
 			goto out_cleanup;
+
+		mvneta_dev_num++;
 	}
-	mvneta_dev_num += ifnum;
 
 	rte_kvargs_free(kvlist);
 
 	return 0;
 out_cleanup:
-	for (; i > 0; i--)
-		mvneta_eth_dev_destroy_name(ifnames.names[i]);
+	rte_pmd_mvneta_remove(vdev);
 
-	if (mvneta_dev_num == 0) {
-		mvneta_neta_deinit();
-		rte_mvep_deinit(MVEP_MOD_T_NETA);
-	}
 out_free_kvlist:
 	rte_kvargs_free(kvlist);
 
@@ -946,27 +964,12 @@ out_free_kvlist:
 static int
 rte_pmd_mvneta_remove(struct rte_vdev_device *vdev)
 {
-	int i;
-	const char *name;
+	uint16_t port_id;
 
-	name = rte_vdev_device_name(vdev);
-	if (!name)
-		return -EINVAL;
-
-	MVNETA_LOG(INFO, "Removing %s", name);
-
-	RTE_ETH_FOREACH_DEV(i) {
-		if (rte_eth_devices[i].device != &vdev->device)
+	RTE_ETH_FOREACH_DEV(port_id) {
+		if (rte_eth_devices[port_id].device != &vdev->device)
 			continue;
-
-		mvneta_eth_dev_destroy(&rte_eth_devices[i]);
-		mvneta_dev_num--;
-	}
-
-	if (mvneta_dev_num == 0) {
-		MVNETA_LOG(INFO, "Perform MUSDK deinit");
-		mvneta_neta_deinit();
-		rte_mvep_deinit(MVEP_MOD_T_NETA);
+		rte_eth_dev_close(port_id);
 	}
 
 	return 0;

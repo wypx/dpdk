@@ -16,7 +16,9 @@
  */
 
 #include <stdint.h>
+#include <sys/types.h>
 #include <netinet/in.h>
+#include <netinet/ip.h>
 
 #include <rte_byteorder.h>
 #include <rte_mbuf.h>
@@ -31,14 +33,14 @@ extern "C" {
 struct rte_ipv4_hdr {
 	uint8_t  version_ihl;		/**< version and header length */
 	uint8_t  type_of_service;	/**< type of service */
-	uint16_t total_length;		/**< length of packet */
-	uint16_t packet_id;		/**< packet ID */
-	uint16_t fragment_offset;	/**< fragmentation offset */
+	rte_be16_t total_length;	/**< length of packet */
+	rte_be16_t packet_id;		/**< packet ID */
+	rte_be16_t fragment_offset;	/**< fragmentation offset */
 	uint8_t  time_to_live;		/**< time to live */
 	uint8_t  next_proto_id;		/**< protocol ID */
-	uint16_t hdr_checksum;		/**< header checksum */
-	uint32_t src_addr;		/**< source address */
-	uint32_t dst_addr;		/**< destination address */
+	rte_be16_t hdr_checksum;	/**< header checksum */
+	rte_be32_t src_addr;		/**< source address */
+	rte_be32_t dst_addr;		/**< destination address */
 } __attribute__((__packed__));
 
 /** Create IPv4 address */
@@ -57,6 +59,11 @@ struct rte_ipv4_hdr {
  * length in number of 4-byte words)
  */
 #define RTE_IPV4_IHL_MULTIPLIER	(4)
+
+/* Type of Service fields */
+#define RTE_IPV4_HDR_DSCP_MASK	(0xfc)
+#define RTE_IPV4_HDR_ECN_MASK	(0x03)
+#define RTE_IPV4_HDR_ECN_CE	RTE_IPV4_HDR_ECN_MASK
 
 /* Fragment Offset * Flags. */
 #define	RTE_IPV4_HDR_DF_SHIFT	14
@@ -91,6 +98,10 @@ struct rte_ipv4_hdr {
 #define RTE_IS_IPV4_MCAST(x) \
 	((x) >= RTE_IPV4_MIN_MCAST && (x) <= RTE_IPV4_MAX_MCAST)
 	/**< check if IPv4 address is multicast */
+
+/* IPv4 default fields values */
+#define RTE_IPV4_MIN_IHL    (0x5)
+#define RTE_IPV4_VHL_DEF    (IPVERSION | RTE_IPV4_MIN_IHL)
 
 /**
  * @internal Calculate a sum of all words in the buffer.
@@ -343,19 +354,22 @@ rte_ipv4_udptcp_cksum(const struct rte_ipv4_hdr *ipv4_hdr, const void *l4_hdr)
  * IPv6 Header
  */
 struct rte_ipv6_hdr {
-	uint32_t vtc_flow;     /**< IP version, traffic class & flow label. */
-	uint16_t payload_len;  /**< IP packet length - includes sizeof(ip_header). */
-	uint8_t  proto;        /**< Protocol, next header. */
-	uint8_t  hop_limits;   /**< Hop limits. */
-	uint8_t  src_addr[16]; /**< IP address of source host. */
-	uint8_t  dst_addr[16]; /**< IP address of destination host(s). */
+	rte_be32_t vtc_flow;	/**< IP version, traffic class & flow label. */
+	rte_be16_t payload_len;	/**< IP packet length - includes header size */
+	uint8_t  proto;		/**< Protocol, next header. */
+	uint8_t  hop_limits;	/**< Hop limits. */
+	uint8_t  src_addr[16];	/**< IP address of source host. */
+	uint8_t  dst_addr[16];	/**< IP address of destination host(s). */
 } __attribute__((__packed__));
 
 /* IPv6 vtc_flow: IPv / TC / flow_label */
 #define RTE_IPV6_HDR_FL_SHIFT 0
 #define RTE_IPV6_HDR_TC_SHIFT 20
-#define RTE_IPV6_HDR_FL_MASK ((1u << RTE_IPV6_HDR_TC_SHIFT) - 1)
-#define RTE_IPV6_HDR_TC_MASK (0xf << RTE_IPV6_HDR_TC_SHIFT)
+#define RTE_IPV6_HDR_FL_MASK	((1u << RTE_IPV6_HDR_TC_SHIFT) - 1)
+#define RTE_IPV6_HDR_TC_MASK	(0xff << RTE_IPV6_HDR_TC_SHIFT)
+#define RTE_IPV6_HDR_DSCP_MASK	(0xfc << RTE_IPV6_HDR_TC_SHIFT)
+#define RTE_IPV6_HDR_ECN_MASK	(0x03 << RTE_IPV6_HDR_TC_SHIFT)
+#define RTE_IPV6_HDR_ECN_CE	RTE_IPV6_HDR_ECN_MASK
 
 /**
  * Process the pseudo-header checksum of an IPv6 header.
@@ -378,8 +392,8 @@ rte_ipv6_phdr_cksum(const struct rte_ipv6_hdr *ipv6_hdr, uint64_t ol_flags)
 {
 	uint32_t sum;
 	struct {
-		uint32_t len;   /* L4 length. */
-		uint32_t proto; /* L4 protocol - top 3 bytes must be zero */
+		rte_be32_t len;   /* L4 length. */
+		rte_be32_t proto; /* L4 protocol - top 3 bytes must be zero */
 	} psd_hdr;
 
 	psd_hdr.proto = (uint32_t)(ipv6_hdr->proto << 24);
@@ -426,6 +440,56 @@ rte_ipv6_udptcp_cksum(const struct rte_ipv6_hdr *ipv6_hdr, const void *l4_hdr)
 		cksum = 0xffff;
 
 	return (uint16_t)cksum;
+}
+
+/* IPv6 fragmentation header size */
+#define RTE_IPV6_FRAG_HDR_SIZE 8
+
+/**
+ * Parse next IPv6 header extension
+ *
+ * This function checks if proto number is an IPv6 extensions and parses its
+ * data if so, providing information on next header and extension length.
+ *
+ * @param p
+ *   Pointer to an extension raw data.
+ * @param proto
+ *   Protocol number extracted from the "next header" field from
+ *   the IPv6 header or the previous extension.
+ * @param ext_len
+ *   Extension data length.
+ * @return
+ *   next protocol number if proto is an IPv6 extension, -EINVAL otherwise
+ */
+__rte_experimental
+static inline int
+rte_ipv6_get_next_ext(uint8_t *p, int proto, size_t *ext_len)
+{
+	int next_proto;
+
+	switch (proto) {
+	case IPPROTO_AH:
+		next_proto = *p++;
+		*ext_len = (*p + 2) * sizeof(uint32_t);
+		break;
+
+	case IPPROTO_HOPOPTS:
+	case IPPROTO_ROUTING:
+	case IPPROTO_DSTOPTS:
+		next_proto = *p++;
+		*ext_len = (*p + 1) * sizeof(uint64_t);
+		break;
+
+	case IPPROTO_FRAGMENT:
+		next_proto = *p;
+		*ext_len = RTE_IPV6_FRAG_HDR_SIZE;
+		break;
+
+	default:
+		return -EINVAL;
+	}
+
+	return next_proto;
 }
 
 #ifdef __cplusplus

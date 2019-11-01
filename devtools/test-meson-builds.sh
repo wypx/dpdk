@@ -15,6 +15,11 @@ srcdir=$(dirname $(readlink -f $0))/..
 MESON=${MESON:-meson}
 use_shared="--default-library=shared"
 
+if command -v gmake >/dev/null 2>&1 ; then
+	MAKE=gmake
+else
+	MAKE=make
+fi
 if command -v ninja >/dev/null 2>&1 ; then
 	ninja_cmd=ninja
 elif command -v ninja-build >/dev/null 2>&1 ; then
@@ -23,13 +28,41 @@ else
 	echo "ERROR: ninja is not found" >&2
 	exit 1
 fi
+if command -v ccache >/dev/null 2>&1 ; then
+	CCACHE=ccache
+else
+	CCACHE=
+fi
 
-build () # <directory> <meson options>
+default_path=$PATH
+default_pkgpath=$PKG_CONFIG_PATH
+
+load_env () # <target compiler>
+{
+	targetcc=$1
+	export PATH=$default_path
+	export PKG_CONFIG_PATH=$default_pkgpath
+	unset DPDK_MESON_OPTIONS
+	command -v $targetcc >/dev/null 2>&1 || return 1
+	DPDK_TARGET=$($targetcc -v 2>&1 | sed -n 's,^Target: ,,p')
+	. $srcdir/devtools/load-devel-config
+}
+
+build () # <directory> <target compiler> <meson options>
 {
 	builddir=$1
 	shift
+	targetcc=$1
+	shift
+	# skip build if compiler not available
+	command -v ${CC##* } >/dev/null 2>&1 || return 0
+	load_env $targetcc || return 0
 	if [ ! -f "$builddir/build.ninja" ] ; then
-		options="--werror -Dexamples=all $*"
+		options="--werror -Dexamples=all"
+		for option in $DPDK_MESON_OPTIONS ; do
+			options="$options -D$option"
+		done
+		options="$options $*"
 		echo "$MESON $options $srcdir $builddir"
 		$MESON $options $srcdir $builddir
 		unset CC
@@ -63,30 +96,44 @@ fi
 for c in gcc clang ; do
 	command -v $c >/dev/null 2>&1 || continue
 	for s in static shared ; do
-		export CC="ccache $c"
-		build build-$c-$s --default-library=$s
+		export CC="$CCACHE $c"
+		build build-$c-$s $c --default-library=$s
 	done
 done
 
 # test compilation with minimal x86 instruction set
+# Set the install path for libraries to "lib" explicitly to prevent problems
+# with pkg-config prefixes if installed in "lib/x86_64-linux-gnu" later.
 default_machine='nehalem'
 ok=$(cc -march=$default_machine -E - < /dev/null > /dev/null 2>&1 || echo false)
 if [ "$ok" = "false" ] ; then
 	default_machine='corei7'
 fi
-build build-x86-default -Dmachine=$default_machine $use_shared
+build build-x86-default cc -Dlibdir=lib -Dmachine=$default_machine $use_shared
 
-# enable cross compilation if gcc cross-compiler is found
 c=aarch64-linux-gnu-gcc
-if command -v $c >/dev/null 2>&1 ; then
-	# compile the general v8a also for clang to increase coverage
-	export CC="ccache clang"
-	build build-arm64-host-clang $use_shared \
-		--cross-file $srcdir/config/arm/arm64_armv8_linux_gcc
+# generic armv8a with clang as host compiler
+export CC="clang"
+build build-arm64-host-clang $c $use_shared \
+	--cross-file $srcdir/config/arm/arm64_armv8_linux_gcc
+# all gcc/arm configurations
+for f in $srcdir/config/arm/arm*gcc ; do
+	export CC="$CCACHE gcc"
+	build build-$(basename $f | tr '_' '-' | cut -d'-' -f-2) $c \
+		$use_shared --cross-file $f
+done
 
-	for f in $srcdir/config/arm/arm*gcc ; do
-		export CC="ccache gcc"
-		build build-$(basename $f | tr '_' '-' | cut -d'-' -f-2) \
-			$use_shared --cross-file $f
-	done
-fi
+# Test installation of the x86-default target, to be used for checking
+# the sample apps build using the pkg-config file for cflags and libs
+build_path=build-x86-default
+export DESTDIR=$(pwd)/$build_path/install-root
+$ninja_cmd -C $build_path install
+
+load_env cc
+pc_file=$(find $DESTDIR -name libdpdk.pc)
+export PKG_CONFIG_PATH=$(dirname $pc_file):$PKG_CONFIG_PATH
+
+for example in cmdline helloworld l2fwd l3fwd skeleton timer; do
+	echo "## Building $example"
+	$MAKE -C $DESTDIR/usr/local/share/dpdk/examples/$example clean all
+done

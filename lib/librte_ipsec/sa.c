@@ -77,7 +77,7 @@ fill_crypto_xform(struct crypto_xform *xform, uint64_t type,
 	return 0;
 }
 
-uint64_t __rte_experimental
+uint64_t
 rte_ipsec_sa_type(const struct rte_ipsec_sa *sa)
 {
 	return sa->type;
@@ -149,7 +149,7 @@ ipsec_sa_size(uint64_t type, uint32_t *wnd_sz, uint32_t *nb_bucket)
 	return sz;
 }
 
-void __rte_experimental
+void
 rte_ipsec_sa_fini(struct rte_ipsec_sa *sa)
 {
 	memset(sa, 0, sa->size);
@@ -213,6 +213,18 @@ fill_sa_type(const struct rte_ipsec_sa_prm *prm, uint64_t *type)
 		tp |= RTE_IPSEC_SATP_ESN_DISABLE;
 	else
 		tp |= RTE_IPSEC_SATP_ESN_ENABLE;
+
+	/* check for ECN flag */
+	if (prm->ipsec_xform.options.ecn == 0)
+		tp |= RTE_IPSEC_SATP_ECN_DISABLE;
+	else
+		tp |= RTE_IPSEC_SATP_ECN_ENABLE;
+
+	/* check for DSCP flag */
+	if (prm->ipsec_xform.options.copy_dscp == 0)
+		tp |= RTE_IPSEC_SATP_DSCP_DISABLE;
+	else
+		tp |= RTE_IPSEC_SATP_DSCP_ENABLE;
 
 	/* interpret flags */
 	if (prm->flags & RTE_IPSEC_SAFLAG_SQN_ATOM)
@@ -310,6 +322,12 @@ esp_sa_init(struct rte_ipsec_sa *sa, const struct rte_ipsec_sa_prm *prm,
 	static const uint64_t msk = RTE_IPSEC_SATP_DIR_MASK |
 				RTE_IPSEC_SATP_MODE_MASK;
 
+	if (prm->ipsec_xform.options.ecn)
+		sa->tos_mask |= RTE_IPV4_HDR_ECN_MASK;
+
+	if (prm->ipsec_xform.options.copy_dscp)
+		sa->tos_mask |= RTE_IPV4_HDR_DSCP_MASK;
+
 	if (cxf->aead != NULL) {
 		switch (cxf->aead->algo) {
 		case RTE_CRYPTO_AEAD_AES_GCM:
@@ -405,7 +423,7 @@ fill_sa_replay(struct rte_ipsec_sa *sa, uint32_t wnd_sz, uint32_t nb_bucket)
 			((uintptr_t)sa->sqn.inb.rsn[0] + rsn_size(nb_bucket));
 }
 
-int __rte_experimental
+int
 rte_ipsec_sa_size(const struct rte_ipsec_sa_prm *prm)
 {
 	uint64_t type;
@@ -425,7 +443,7 @@ rte_ipsec_sa_size(const struct rte_ipsec_sa_prm *prm)
 	return ipsec_sa_size(type, &wsz, &nb);
 }
 
-int __rte_experimental
+int
 rte_ipsec_sa_init(struct rte_ipsec_sa *sa, const struct rte_ipsec_sa_prm *prm,
 	uint32_t size)
 {
@@ -612,10 +630,10 @@ inline_crypto_pkt_func_select(const struct rte_ipsec_sa *sa,
 	switch (sa->type & msk) {
 	case (RTE_IPSEC_SATP_DIR_IB | RTE_IPSEC_SATP_MODE_TUNLV4):
 	case (RTE_IPSEC_SATP_DIR_IB | RTE_IPSEC_SATP_MODE_TUNLV6):
-		pf->process = esp_inb_tun_pkt_process;
+		pf->process = inline_inb_tun_pkt_process;
 		break;
 	case (RTE_IPSEC_SATP_DIR_IB | RTE_IPSEC_SATP_MODE_TRANS):
-		pf->process = esp_inb_trs_pkt_process;
+		pf->process = inline_inb_trs_pkt_process;
 		break;
 	case (RTE_IPSEC_SATP_DIR_OB | RTE_IPSEC_SATP_MODE_TUNLV4):
 	case (RTE_IPSEC_SATP_DIR_OB | RTE_IPSEC_SATP_MODE_TUNLV6):

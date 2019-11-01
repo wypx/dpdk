@@ -177,6 +177,12 @@ parallel_test_list = [
         "Report":  None,
     },
     {
+        "Name":    "MCSlock autotest",
+        "Command": "mcslock_autotest",
+        "Func":    mcslock_autotest,
+        "Report":  None,
+    },
+    {
         "Name":    "Byte order autotest",
         "Command": "byteorder_autotest",
         "Func":    default_autotest,
@@ -393,8 +399,8 @@ parallel_test_list = [
         "Report":  None,
     },
     {
-        "Name":    "Cryptodev sw mrvl autotest",
-        "Command": "cryptodev_sw_mrvl_autotest",
+        "Name":    "Cryptodev sw mvsam autotest",
+        "Command": "cryptodev_sw_mvsam_autotest",
         "Func":    default_autotest,
         "Report":  None,
     },
@@ -512,6 +518,12 @@ parallel_test_list = [
         "Func":    default_autotest,
         "Report":  None,
     },
+    {
+        "Name":    "IPsec_SAD",
+        "Command": "ipsec_sad_autotest",
+        "Func":    default_autotest,
+        "Report":  None,
+    },
     #
     #Please always keep all dump tests at the end and together!
     #
@@ -622,8 +634,8 @@ non_parallel_test_list = [
         "Report":      None,
     },
     {
-        "Name":       "Power ACPI cpufreq autotest",
-        "Command":    "power_acpi_cpufreq_autotest",
+        "Name":       "Power cpufreq autotest",
+        "Command":    "power_cpufreq_autotest",
         "Func":       default_autotest,
         "Report":     None,
     },
